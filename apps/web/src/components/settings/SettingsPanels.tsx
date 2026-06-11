@@ -4,6 +4,8 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   defaultInstanceIdForDriver,
+  type CursorLocalHistoryDryRunResult,
+  type CursorLocalHistoryImportResult,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -122,6 +124,116 @@ function withoutProviderInstanceFavorites(
 const PROVIDER_SETTINGS = DRIVER_OPTIONS.map((definition) => ({
   provider: definition.value,
 }));
+
+const CURSOR_HISTORY_WORKSPACE_PREVIEW_LIMIT = 6;
+const CURSOR_HISTORY_ERROR_PREVIEW_LIMIT = 4;
+const CURSOR_HISTORY_SOURCE_PREVIEW_LIMIT = 5;
+const CURSOR_HISTORY_IMPORT_BATCH_SIZE = 25;
+
+function formatCursorHistoryNumber(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function CursorHistoryMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2">
+      <div className="font-mono text-sm font-semibold tabular-nums text-foreground">
+        {formatCursorHistoryNumber(value)}
+      </div>
+      <div className="mt-0.5 text-[11px] text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function CursorLocalHistoryDryRunDetails({ result }: { result: CursorLocalHistoryDryRunResult }) {
+  const previewWorkspaces = result.workspaces.slice(0, CURSOR_HISTORY_WORKSPACE_PREVIEW_LIMIT);
+  const previewErrors = result.errors.slice(0, CURSOR_HISTORY_ERROR_PREVIEW_LIMIT);
+  const previewSources = [
+    result.roots.projectsDir,
+    result.roots.chatsDir,
+    result.roots.workspaceStorageDir,
+  ].slice(0, CURSOR_HISTORY_SOURCE_PREVIEW_LIMIT);
+
+  return (
+    <div className="mt-3 space-y-3 rounded-xl border border-border/60 bg-muted/25 p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <CursorHistoryMetric label="workspaces" value={result.workspaceCount} />
+        <CursorHistoryMetric label="chats" value={result.chatCount} />
+        <CursorHistoryMetric label="messages" value={result.messageCount} />
+        <CursorHistoryMetric label="parse errors" value={result.parseErrorCount} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            Top workspaces
+          </div>
+          <div className="space-y-1.5">
+            {previewWorkspaces.length > 0 ? (
+              previewWorkspaces.map((workspace) => (
+                <div
+                  key={workspace.workspaceKey}
+                  className="rounded-lg border border-border/50 bg-background/70 px-2.5 py-2"
+                >
+                  <div className="truncate text-xs font-medium text-foreground">
+                    {workspace.workspacePath ?? workspace.workspaceSlug ?? workspace.workspaceKey}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {formatCursorHistoryNumber(workspace.chatCount)} chats ·{" "}
+                    {formatCursorHistoryNumber(workspace.messageCount)} messages
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-lg border border-dashed border-border/60 px-2.5 py-2 text-xs text-muted-foreground">
+                No local Cursor chats found yet.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            Source roots
+          </div>
+          <div className="space-y-1.5">
+            {previewSources.map((source) => (
+              <code
+                key={source}
+                className="block truncate rounded-lg border border-border/50 bg-background/70 px-2.5 py-2 font-mono text-[11px] text-muted-foreground"
+                title={source}
+              >
+                {source}
+              </code>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {previewErrors.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-destructive/80">
+            Scan issues
+          </div>
+          <div className="space-y-1.5">
+            {previewErrors.map((error) => (
+              <div
+                key={`${error.kind}:${error.path}:${error.message}`}
+                className="rounded-lg border border-destructive/20 bg-destructive/5 px-2.5 py-2"
+              >
+                <div className="text-xs font-medium text-destructive/90">{error.kind}</div>
+                <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                  {error.path}
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">{error.message}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }) {
   useRelativeTimeTick();
@@ -485,6 +597,17 @@ export function GeneralSettingsPanel() {
   const { updateSettings } = useUpdateSettings();
   const observability = useServerObservability();
   const serverProviders = useServerProviders();
+  const [cursorHistoryDryRun, setCursorHistoryDryRun] =
+    useState<CursorLocalHistoryDryRunResult | null>(null);
+  const [cursorHistoryImport, setCursorHistoryImport] =
+    useState<CursorLocalHistoryImportResult | null>(null);
+  const [cursorHistoryImportProgress, setCursorHistoryImportProgress] = useState<{
+    readonly completed: number;
+    readonly total: number;
+  } | null>(null);
+  const [isScanningCursorHistory, setIsScanningCursorHistory] = useState(false);
+  const [isImportingCursorHistory, setIsImportingCursorHistory] = useState(false);
+  const [cursorHistoryError, setCursorHistoryError] = useState<string | null>(null);
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -515,6 +638,102 @@ export function GeneralSettingsPanel() {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const scanCursorHistory = useCallback(() => {
+    setIsScanningCursorHistory(true);
+    setCursorHistoryError(null);
+    void ensureLocalApi()
+      .server.cursorLocalHistoryDryRun()
+      .then((result) => {
+        setCursorHistoryDryRun(result);
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Cursor history scan failed.";
+        setCursorHistoryError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not scan Cursor history",
+            description: message,
+          }),
+        );
+      })
+      .finally(() => {
+        setIsScanningCursorHistory(false);
+      });
+  }, []);
+  const importCursorHistory = useCallback(() => {
+    setIsImportingCursorHistory(true);
+    setCursorHistoryImportProgress({ completed: 0, total: cursorHistoryDryRun?.chatCount ?? 0 });
+    setCursorHistoryError(null);
+    void (async () => {
+      const api = ensureLocalApi();
+      let offset = 0;
+      let total = cursorHistoryDryRun?.chatCount ?? 0;
+      let aggregate: CursorLocalHistoryImportResult = {
+        totalCandidateCount: total,
+        importedCandidateOffset: 0,
+        importedCandidateLimit: 0,
+        importedProjectCount: 0,
+        importedThreadCount: 0,
+        importedMessageCount: 0,
+        skippedChatCount: 0,
+        errors: [],
+        threads: [],
+      };
+
+      do {
+        const result = await api.server.cursorLocalHistoryImport({
+          offset,
+          limit: CURSOR_HISTORY_IMPORT_BATCH_SIZE,
+        });
+        total = result.totalCandidateCount;
+        const completed = Math.min(
+          result.totalCandidateCount,
+          result.importedCandidateOffset + result.importedCandidateLimit,
+        );
+        aggregate = {
+          totalCandidateCount: result.totalCandidateCount,
+          importedCandidateOffset: 0,
+          importedCandidateLimit: completed,
+          importedProjectCount: aggregate.importedProjectCount + result.importedProjectCount,
+          importedThreadCount: aggregate.importedThreadCount + result.importedThreadCount,
+          importedMessageCount: aggregate.importedMessageCount + result.importedMessageCount,
+          skippedChatCount: aggregate.skippedChatCount + result.skippedChatCount,
+          errors: [...aggregate.errors, ...result.errors],
+          threads: [...aggregate.threads, ...result.threads],
+        };
+        setCursorHistoryImport(aggregate);
+        setCursorHistoryImportProgress({ completed, total });
+        offset = completed;
+      } while (offset < total);
+
+      return aggregate;
+    })()
+      .then((result) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Cursor history imported",
+            description: `${formatCursorHistoryNumber(result.importedThreadCount)} chats and ${formatCursorHistoryNumber(result.importedMessageCount)} messages are now T3 threads.`,
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Cursor history import failed.";
+        setCursorHistoryError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not import Cursor history",
+            description: message,
+          }),
+        );
+      })
+      .finally(() => {
+        setIsImportingCursorHistory(false);
+        setCursorHistoryImportProgress(null);
+      });
+  }, [cursorHistoryDryRun?.chatCount]);
 
   return (
     <SettingsPageContainer>
@@ -891,6 +1110,112 @@ export function GeneralSettingsPanel() {
             </div>
           }
         />
+      </SettingsSection>
+
+      <SettingsSection title="Cursor history">
+        <SettingsRow
+          title="Local Cursor runs"
+          description="Dry-run scan local Cursor agent/composer history. This reads Cursor files only; it does not import or write anything yet."
+          status={
+            cursorHistoryImportProgress ? (
+              <>
+                Importing{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(cursorHistoryImportProgress.completed)}
+                </span>{" "}
+                /{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(cursorHistoryImportProgress.total)}
+                </span>{" "}
+                chats.
+              </>
+            ) : cursorHistoryImport ? (
+              <>
+                Imported{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(cursorHistoryImport.importedThreadCount)}
+                </span>{" "}
+                chats and{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(cursorHistoryImport.importedMessageCount)}
+                </span>{" "}
+                messages. They are now normal T3 threads.
+              </>
+            ) : cursorHistoryDryRun ? (
+              <>
+                Last scan found{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(cursorHistoryDryRun.chatCount)}
+                </span>{" "}
+                chats across{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(cursorHistoryDryRun.workspaceCount)}
+                </span>{" "}
+                workspaces.
+              </>
+            ) : cursorHistoryError ? (
+              <span className="text-destructive/80">{cursorHistoryError}</span>
+            ) : (
+              "Run a dry scan to preview what T3 Code can see."
+            )
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={scanCursorHistory}
+                disabled={isScanningCursorHistory || isImportingCursorHistory}
+              >
+                {isScanningCursorHistory ? (
+                  <LoaderIcon className="size-3 animate-spin" />
+                ) : (
+                  <RefreshCwIcon className="size-3" />
+                )}
+                {isScanningCursorHistory ? "Scanning" : "Scan"}
+              </Button>
+              <Button
+                size="xs"
+                variant="default"
+                onClick={importCursorHistory}
+                disabled={isScanningCursorHistory || isImportingCursorHistory}
+              >
+                {isImportingCursorHistory ? <LoaderIcon className="size-3 animate-spin" /> : null}
+                {isImportingCursorHistory && cursorHistoryImportProgress
+                  ? `${formatCursorHistoryNumber(cursorHistoryImportProgress.completed)} / ${formatCursorHistoryNumber(cursorHistoryImportProgress.total)}`
+                  : isImportingCursorHistory
+                    ? "Importing"
+                    : "Import"}
+              </Button>
+            </div>
+          }
+        >
+          {cursorHistoryDryRun ? (
+            <CursorLocalHistoryDryRunDetails result={cursorHistoryDryRun} />
+          ) : null}
+          {cursorHistoryImport ? (
+            <div className="mt-3 rounded-xl border border-border/60 bg-muted/25 p-3 text-xs text-muted-foreground">
+              {cursorHistoryImportProgress ? (
+                <div className="mb-1">
+                  Importing batch {formatCursorHistoryNumber(cursorHistoryImportProgress.completed)}{" "}
+                  / {formatCursorHistoryNumber(cursorHistoryImportProgress.total)} chats.
+                </div>
+              ) : null}
+              <div>
+                Imported {formatCursorHistoryNumber(cursorHistoryImport.importedProjectCount)}{" "}
+                projects, {formatCursorHistoryNumber(cursorHistoryImport.importedThreadCount)}{" "}
+                threads, and {formatCursorHistoryNumber(cursorHistoryImport.importedMessageCount)}{" "}
+                messages.
+              </div>
+              {cursorHistoryImport.skippedChatCount > 0 ? (
+                <div className="mt-1 text-destructive/80">
+                  Skipped {formatCursorHistoryNumber(cursorHistoryImport.skippedChatCount)} chats
+                  without known workspace paths.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title="About">

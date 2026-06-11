@@ -20,6 +20,7 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadMessagesImportedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadUnarchivedPayload,
@@ -436,6 +437,50 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.messages-imported":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadMessagesImportedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        const importedMessages = yield* Effect.forEach(payload.messages, (message) =>
+          decodeForEvent(
+            OrchestrationMessage,
+            {
+              id: message.messageId,
+              role: message.role,
+              text: message.text,
+              turnId: null,
+              streaming: false,
+              createdAt: message.createdAt,
+              updatedAt: message.updatedAt,
+            },
+            event.type,
+            "message",
+          ),
+        );
+        const existingMessageIds = new Set(thread.messages.map((message) => message.id));
+        const messages = [
+          ...thread.messages,
+          ...importedMessages.filter((message) => !existingMessageIds.has(message.id)),
+        ].slice(-MAX_THREAD_MESSAGES);
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages,
             updatedAt: event.occurredAt,
           }),
         };

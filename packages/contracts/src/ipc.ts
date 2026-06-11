@@ -53,6 +53,11 @@ import type {
   TerminalWriteInput,
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
+import type {
+  CursorLocalHistoryDryRunResult,
+  CursorLocalHistoryImportInput,
+  CursorLocalHistoryImportResult,
+} from "./cursorLocalHistory.ts";
 import * as Schema from "effect/Schema";
 import type {
   ClientOrchestrationCommand,
@@ -520,6 +525,10 @@ export interface LocalApi {
       input: ServerProcessResourceHistoryInput,
     ) => Promise<ServerProcessResourceHistoryResult>;
     signalProcess: (input: ServerSignalProcessInput) => Promise<ServerSignalProcessResult>;
+    cursorLocalHistoryDryRun: () => Promise<CursorLocalHistoryDryRunResult>;
+    cursorLocalHistoryImport: (
+      input?: CursorLocalHistoryImportInput,
+    ) => Promise<CursorLocalHistoryImportResult>;
   };
 }
 

@@ -103,6 +103,11 @@ import {
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
+import {
+  CursorLocalHistoryDryRunResult,
+  CursorLocalHistoryImportInput,
+  CursorLocalHistoryImportResult,
+} from "./cursorLocalHistory.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -170,6 +175,8 @@ export const WS_METHODS = {
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverSignalProcess: "server.signalProcess",
+  serverCursorLocalHistoryDryRun: "server.cursorLocalHistory.dryRun",
+  serverCursorLocalHistoryImport: "server.cursorLocalHistory.import",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -271,6 +278,24 @@ export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess,
   success: ServerSignalProcessResult,
   error: EnvironmentAuthorizationError,
 });
+
+export const WsServerCursorLocalHistoryDryRunRpc = Rpc.make(
+  WS_METHODS.serverCursorLocalHistoryDryRun,
+  {
+    payload: Schema.Struct({}),
+    success: CursorLocalHistoryDryRunResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const WsServerCursorLocalHistoryImportRpc = Rpc.make(
+  WS_METHODS.serverCursorLocalHistoryImport,
+  {
+    payload: CursorLocalHistoryImportInput,
+    success: CursorLocalHistoryImportResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
 
 export const WsCloudGetRelayClientStatusRpc = Rpc.make(WS_METHODS.cloudGetRelayClientStatus, {
   payload: Schema.Struct({}),
@@ -558,6 +583,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
+  WsServerCursorLocalHistoryDryRunRpc,
+  WsServerCursorLocalHistoryImportRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,

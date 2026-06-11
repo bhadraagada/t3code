@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
+  DEFAULT_SERVER_SETTINGS,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthReviewWriteScope,
@@ -98,6 +99,11 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
+import {
+  importCursorLocalHistoryCandidates,
+  scanCursorLocalHistoryDryRun,
+  scanCursorLocalHistoryImportCandidates,
+} from "./cursorLocalHistory/CursorLocalHistory.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -149,6 +155,8 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
+  [WS_METHODS.serverCursorLocalHistoryDryRun, AuthOrchestrationReadScope],
+  [WS_METHODS.serverCursorLocalHistoryImport, AuthOrchestrationOperateScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
   [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
@@ -1077,6 +1085,41 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverCursorLocalHistoryDryRun]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCursorLocalHistoryDryRun,
+            scanCursorLocalHistoryDryRun(),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverCursorLocalHistoryImport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCursorLocalHistoryImport,
+            Effect.gen(function* () {
+              const [candidates, settings] = yield* Effect.all([
+                scanCursorLocalHistoryImportCandidates(),
+                serverSettings.getSettings.pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Failed to read settings for Cursor history import", {
+                      detail: error.message,
+                    }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
+                  ),
+                ),
+              ]);
+              return yield* importCursorLocalHistoryCandidates({
+                candidates,
+                ...(input.offset !== undefined ? { offset: input.offset } : {}),
+                ...(input.limit !== undefined ? { limit: input.limit } : {}),
+                modelSelection: settings.textGenerationModelSelection,
+                orchestrationEngine,
+                projectionSnapshotQuery,
+              });
+            }),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.cloudGetRelayClientStatus]: (_input) =>
           observeRpcEffect(WS_METHODS.cloudGetRelayClientStatus, relayClient.resolve, {
             "rpc.aggregate": "cloud",
