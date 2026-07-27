@@ -4,21 +4,35 @@ import type {
   AuthClientPresentationMetadata,
 } from "@t3tools/contracts";
 import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as Crypto from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as Encoding from "effect/Encoding";
 import * as Result from "effect/Result";
 
 const SESSION_COOKIE_NAME = "t3_session";
 
+/**
+ * Cookies are scoped by host but *not* by port, so any two servers that can be
+ * live on one hostname at once need separate names — otherwise the second
+ * clobbers the first's session and both sides see "Invalid session token
+ * signature" until someone clears cookies by hand.
+ *
+ * Two populations qualify, for the same reason but from different causes:
+ *
+ * - **Dev servers** (`devUrl` set), which run several at a time across worktrees.
+ * - **Desktop**, which scans upward from 3773 for a free port and binds
+ *   127.0.0.1, so a second instance lands on a different port and the same host.
+ *
+ * Hosted deployments keep the stable production name: their public port can
+ * change between releases, and scoping it would log every user out.
+ */
 export function resolveSessionCookieName(input: {
   readonly mode: "web" | "desktop";
   readonly port: number;
+  readonly devUrl: URL | undefined;
 }): string {
-  if (input.mode !== "desktop") {
-    return SESSION_COOKIE_NAME;
-  }
-
-  return `${SESSION_COOKIE_NAME}_${input.port}`;
+  return input.devUrl === undefined && input.mode !== "desktop"
+    ? SESSION_COOKIE_NAME
+    : `${SESSION_COOKIE_NAME}_${input.port}`;
 }
 
 export function base64UrlEncode(input: string | Uint8Array): string {
@@ -32,7 +46,7 @@ export function base64UrlDecodeUtf8(input: string): string {
 }
 
 export function signPayload(payload: string, secret: Uint8Array): string {
-  return Crypto.createHmac("sha256", Buffer.from(secret)).update(payload).digest("base64url");
+  return NodeCrypto.createHmac("sha256", Buffer.from(secret)).update(payload).digest("base64url");
 }
 
 export function timingSafeEqualBase64Url(left: string, right: string): boolean {
@@ -41,7 +55,7 @@ export function timingSafeEqualBase64Url(left: string, right: string): boolean {
   if (leftBuffer.length !== rightBuffer.length) {
     return false;
   }
-  return Crypto.timingSafeEqual(leftBuffer, rightBuffer);
+  return NodeCrypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function normalizeNonEmptyString(value: string | null | undefined): string | undefined {

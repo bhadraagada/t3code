@@ -69,12 +69,15 @@ import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
   normalizeClaudeCliEffort,
   resolveClaudeApiModelId,
+  resolveClaudeContextWindow,
   resolveClaudeEffort,
 } from "./ClaudeProvider.ts";
 import {
@@ -248,21 +251,8 @@ function toMessage(cause: unknown, fallback: string): string {
   return fallback;
 }
 
-function toProcessError(
-  cause: unknown,
-  fallback: string,
-  threadId: ThreadId,
-): ProviderAdapterProcessError {
-  return new ProviderAdapterProcessError({
-    provider: PROVIDER,
-    threadId,
-    detail: toMessage(cause, fallback),
-    cause,
-  });
-}
-
 function normalizeClaudeStreamMessages(
-  cause: Cause.Cause<{ readonly message: string }>,
+  cause: Cause.Cause<ProviderAdapterProcessError>,
 ): ReadonlyArray<string> {
   const errors: Array<string> = [];
   for (const error of Cause.prettyErrors(cause)) {
@@ -296,25 +286,15 @@ function isClaudeInterruptedMessage(message: string): boolean {
   );
 }
 
-function isClaudeInterruptedCause(cause: Cause.Cause<{ readonly message: string }>): boolean {
+function isClaudeInterruptedCause(cause: Cause.Cause<ProviderAdapterProcessError>): boolean {
   return (
     Cause.hasInterruptsOnly(cause) ||
-    normalizeClaudeStreamMessages(cause).some(isClaudeInterruptedMessage)
+    normalizeClaudeStreamMessages(cause).some(isClaudeInterruptedMessage) ||
+    cause.reasons.some(
+      (reason) =>
+        Cause.isFailReason(reason) && isClaudeInterruptedMessage(toMessage(reason.error.cause, "")),
+    )
   );
-}
-
-function messageFromClaudeStreamCause(
-  cause: Cause.Cause<{ readonly message: string }>,
-  fallback: string,
-): string {
-  return normalizeClaudeStreamMessages(cause)[0] ?? fallback;
-}
-
-function interruptionMessageFromClaudeCause(
-  cause: Cause.Cause<{ readonly message: string }>,
-): string {
-  const message = messageFromClaudeStreamCause(cause, "Claude runtime interrupted.");
-  return isClaudeInterruptedMessage(message) ? "Claude runtime interrupted." : message;
 }
 
 function resultErrorsText(result: SDKResultMessage): string {
@@ -362,24 +342,18 @@ function selectedClaudeContextWindow(
   switch (modelSelection?.model) {
     case "claude-opus-4-8":
     case "claude-opus-4-7":
+      // Always 1M at the API; these models expose no contextWindow option.
       return 1_000_000;
   }
 
-  const optionValue = getModelSelectionStringOptionValue(modelSelection, "contextWindow");
-  if (optionValue === "1m") {
-    return 1_000_000;
+  switch (resolveClaudeContextWindow(modelSelection)) {
+    case "1m":
+      return 1_000_000;
+    case "200k":
+      return 200_000;
+    default:
+      return undefined;
   }
-  if (optionValue === "200k") {
-    return 200_000;
-  }
-  const caps = getClaudeModelCapabilities(modelSelection?.model);
-  const hasContextWindowOption = getProviderOptionDescriptors({ caps }).some(
-    (descriptor) => descriptor.type === "select" && descriptor.id === "contextWindow",
-  );
-  if (hasContextWindowOption) {
-    return 200_000;
-  }
-  return undefined;
 }
 
 function finiteNonNegativeInteger(value: unknown): number | undefined {
@@ -1003,7 +977,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
           new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: toMessage(cause, "Failed to read attachment file."),
+            detail: "Failed to read attachment file.",
             cause,
           }),
       ),
@@ -1241,7 +1215,7 @@ function toRequestError(threadId: ThreadId, method: string, cause: unknown): Pro
   return new ProviderAdapterRequestError({
     provider: PROVIDER,
     method,
-    detail: toMessage(cause, `${method} failed`),
+    detail: `${method} failed`,
     cause,
   });
 }
@@ -1368,6 +1342,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const crypto = yield* Crypto.Crypto;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, options?.environment).pipe(
     Effect.provideService(Path.Path, path),
+  );
+  const claudeSdkExecutablePath = yield* resolveClaudeSdkExecutablePath(
+    claudeSettings.binaryPath,
+    claudeEnvironment,
   );
   const nativeEventLogger =
     options?.nativeEventLogger ??
@@ -2607,6 +2585,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       },
     };
 
+    // Undeclared-but-real subtypes (absent from the SDK's union, so they can't
+    // be switch cases): consumed intentionally without emitting, otherwise
+    // they fall through to the unknown-subtype warning and surface as spurious
+    // error rows in client work logs. `background_tasks_changed` is a roster
+    // snapshot ({tasks: [...]}) — the task_* lifecycle events carry the
+    // authoritative per-agent data and the typed background_tasks control
+    // request is the reconciliation source.
+    if ((message.subtype as string) === "background_tasks_changed") {
+      return;
+    }
+
     switch (message.subtype) {
       case "init":
         yield* offerRuntimeEvent({
@@ -2719,6 +2708,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      // Task state patch (status/backgrounded/end_time). No runtime mapping
+      // yet — the terminal task_notification reports the outcome — but it
+      // must not surface as an unknown-subtype warning row.
+      case "task_updated":
+        return;
       case "task_notification":
         yield* emitThreadTokenUsage(
           context,
@@ -2763,6 +2757,52 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       case "thinking_tokens":
         return;
+      case "api_retry":
+        // Transport-level retry heartbeat. Surfacing each attempt as a
+        // warning row spammed the work log (10 rows during a 502 storm);
+        // the terminal result/error path reports the actual failure. Keep
+        // the session visibly alive instead.
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "session.state.changed",
+          payload: {
+            state: "running",
+            reason: `api_retry:${message.attempt}/${message.max_retries}`,
+          },
+        });
+        return;
+      case "session_state_changed":
+        // Authoritative turn-over signal from the CLI.
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "session.state.changed",
+          payload: {
+            state:
+              message.state === "running"
+                ? "running"
+                : message.state === "requires_action"
+                  ? "waiting"
+                  : "ready",
+            reason: `session_state:${message.state}`,
+          },
+        });
+        return;
+      case "notification":
+        // User-facing CLI notification (e.g. context-limit warnings). Only
+        // high-priority ones warrant a work-log row.
+        if (message.priority === "high" || message.priority === "immediate") {
+          yield* emitRuntimeWarning(context, message.text, message);
+        }
+        return;
+      // Inner protocol/UX details with no T3 surface today — consumed
+      // deliberately so they don't masquerade as unknown-subtype warnings.
+      case "model_refusal_fallback":
+      case "local_command_output":
+      case "plugin_install":
+      case "commands_changed":
+      case "memory_recall":
+      case "elicitation_complete":
+        return;
       case "permission_denied":
         yield* offerRuntimeEvent({
           ...base,
@@ -2782,13 +2822,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           message,
         );
         return;
-      default:
+      default: {
+        // Exhaustiveness guard: every subtype in the SDK's typed union is
+        // handled above, so `message` narrows to never here — a new SDK
+        // release adding a subtype fails this typecheck instead of silently
+        // warning at runtime. The runtime fallback still catches undeclared
+        // wire-only subtypes (like background_tasks_changed used to be).
+        message satisfies never;
+        const unknownMessage = message as never as { subtype: string };
         yield* emitRuntimeWarning(
           context,
-          describeUnknownSdkMessage(`Claude system message '${message.subtype}'`, message),
+          describeUnknownSdkMessage(`Claude system message '${unknownMessage.subtype}'`, message),
           message,
         );
         return;
+      }
     }
   });
 
@@ -2896,31 +2944,48 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "rate_limit_event":
         yield* handleSdkTelemetryMessage(context, message);
         return;
-      default:
+      // Composer prompt suggestions have no T3 surface; consumed deliberately.
+      case "prompt_suggestion":
+        return;
+      default: {
+        // Exhaustiveness guard (see handleSystemMessage): new SDK top-level
+        // message types fail typecheck here instead of warning at runtime.
+        message satisfies never;
+        const unknownMessage = message as never as { type: string };
         yield* emitRuntimeWarning(
           context,
-          describeUnknownSdkMessage(`Claude SDK message '${message.type}'`, message),
+          describeUnknownSdkMessage(`Claude SDK message '${unknownMessage.type}'`, message),
           message,
         );
         return;
+      }
     }
   });
 
   const runSdkStream = (
     context: ClaudeSessionContext,
   ): Effect.Effect<void, ProviderAdapterProcessError> =>
-    Stream.fromAsyncIterable(context.query, (cause) =>
-      toProcessError(cause, "Claude runtime stream failed.", context.session.threadId),
+    Stream.fromAsyncIterable(
+      context.query,
+      (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: context.session.threadId,
+          detail: "Claude runtime stream failed.",
+          cause,
+        }),
     ).pipe(
       Stream.takeWhile(() => !context.stopped),
       Stream.runForEach((message) =>
         handleSdkMessage(context, message).pipe(
-          Effect.mapError((cause) =>
-            toProcessError(
-              cause,
-              "Failed to process Claude runtime event.",
-              context.session.threadId,
-            ),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: context.session.threadId,
+                detail: "Failed to process Claude runtime event.",
+                cause,
+              }),
           ),
         ),
       ),
@@ -2937,15 +3002,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (Exit.isFailure(exit)) {
       if (isClaudeInterruptedCause(exit.cause)) {
         if (context.turnState) {
-          yield* completeTurn(
-            context,
-            "interrupted",
-            interruptionMessageFromClaudeCause(exit.cause),
-          );
+          yield* completeTurn(context, "interrupted", "Claude runtime interrupted.");
         }
       } else {
-        const message = messageFromClaudeStreamCause(exit.cause, "Claude runtime stream failed.");
-        yield* emitRuntimeError(context, message, Cause.pretty(exit.cause));
+        const failures = exit.cause.reasons.flatMap((reason) =>
+          Cause.isFailReason(reason) ? [reason.error] : [],
+        );
+        const message = failures[0]?.detail ?? "Claude runtime stream failed.";
+        yield* emitRuntimeError(context, message, {
+          failureCount: failures.length,
+          failureTags: failures.map((failure) => failure._tag),
+        });
         yield* completeTurn(context, "failed", message);
       }
     } else if (context.turnState) {
@@ -3003,12 +3070,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         new ProviderAdapterProcessError({
           provider: PROVIDER,
           threadId: context.session.threadId,
-          detail: toMessage(cause, "Failed to close Claude runtime query."),
+          detail: "Failed to close Claude runtime query.",
           cause,
         }),
     }).pipe(
-      Effect.catch((cause) =>
-        emitRuntimeError(context, "Failed to close Claude runtime query.", cause),
+      Effect.catch((error) =>
+        emitRuntimeError(context, "Failed to close Claude runtime query.", {
+          errorTag: error._tag,
+          provider: error.provider,
+          threadId: error.threadId,
+          detail: error.detail,
+        }),
       ),
     );
 
@@ -3411,7 +3483,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
         runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
 
-      const claudeBinaryPath = claudeSettings.binaryPath;
+      const claudeBinaryPath = claudeSdkExecutablePath;
       const extraArgs = parseCliArgs(claudeSettings.launchArgs).flags;
       const modelSelection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
@@ -3437,6 +3509,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const effectiveEffort = getEffectiveClaudeAgentEffort(effort, modelSelection?.model);
       const runtimeModeToPermission: Record<string, PermissionMode> = {
         "auto-accept-edits": "acceptEdits",
+        auto: "auto",
         "full-access": "bypassPermissions",
       };
       const permissionMode = runtimeModeToPermission[input.runtimeMode];
@@ -3445,6 +3518,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(fastMode ? { fastMode: true } : {}),
         ...(ultracode ? { ultracode: true } : {}),
       };
+      const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -3470,6 +3544,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
+        ...(mcpSession
+          ? {
+              mcpServers: {
+                "t3-code": {
+                  type: "http",
+                  url: mcpSession.endpoint,
+                  headers: {
+                    Authorization: mcpSession.authorizationHeader,
+                  },
+                },
+              },
+            }
+          : {}),
       };
 
       yield* Effect.annotateCurrentSpan({
@@ -3507,7 +3594,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId,
-            detail: toMessage(cause, "Failed to start Claude runtime session."),
+            detail: "Failed to start Claude runtime session.",
             cause,
           }),
       });

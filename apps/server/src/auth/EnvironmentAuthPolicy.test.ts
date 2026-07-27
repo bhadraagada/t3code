@@ -3,21 +3,22 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import type { ServerConfigShape } from "../config.ts";
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
 
-const makeEnvironmentAuthPolicyLayer = (overrides?: Partial<ServerConfigShape>) =>
+const makeEnvironmentAuthPolicyLayer = (
+  overrides?: Partial<ServerConfig.ServerConfig["Service"]>,
+) =>
   EnvironmentAuthPolicy.layer.pipe(
     Layer.provide(
       Layer.effect(
-        ServerConfig,
+        ServerConfig.ServerConfig,
         Effect.gen(function* () {
-          const config = yield* ServerConfig;
+          const config = yield* ServerConfig.ServerConfig;
           return {
             ...config,
             ...overrides,
-          } satisfies ServerConfigShape;
+          } satisfies ServerConfig.ServerConfig["Service"];
         }),
       ).pipe(
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-policy-test-" })),
@@ -33,12 +34,31 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
 
       expect(descriptor.policy).toBe("desktop-managed-local");
       expect(descriptor.bootstrapMethods).toEqual(["desktop-bootstrap"]);
+      // Packaged desktop has no devUrl, but still needs the port scope: it
+      // scans upward from 3773 for a free port and binds 127.0.0.1, so a second
+      // instance shares this one's hostname on a different port.
       expect(descriptor.sessionCookieName).toBe("t3_session_3773");
     }).pipe(
       Effect.provide(
         makeEnvironmentAuthPolicyLayer({
           mode: "desktop",
           port: 3773,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("keeps desktop cookies port-scoped on the port a second instance lands on", () =>
+    Effect.gen(function* () {
+      const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
+      const descriptor = yield* policy.getDescriptor();
+
+      expect(descriptor.sessionCookieName).toBe("t3_session_3774");
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthPolicyLayer({
+          mode: "desktop",
+          port: 3774,
         }),
       ),
     ),
@@ -74,6 +94,24 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
         makeEnvironmentAuthPolicyLayer({
           mode: "web",
           host: "127.0.0.1",
+          port: 13773,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("scopes web session cookies by port only in development", () =>
+    Effect.gen(function* () {
+      const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
+      const descriptor = yield* policy.getDescriptor();
+
+      expect(descriptor.sessionCookieName).toBe("t3_session_13773");
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthPolicyLayer({
+          mode: "web",
+          port: 13773,
+          devUrl: new URL("http://127.0.0.1:5733"),
         }),
       ),
     ),

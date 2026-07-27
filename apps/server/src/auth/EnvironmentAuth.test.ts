@@ -4,27 +4,36 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import type { ServerConfigShape } from "../config.ts";
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
+import { resolveSessionCookieName } from "./utils.ts";
 
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 
-const makeServerConfigLayer = (overrides?: Partial<ServerConfigShape>) =>
+/** Pinned so dev-mode cookie tests can assert the port-scoped name. */
+const TEST_SERVER_PORT = 13_773;
+
+const makeServerConfigLayer = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
   Layer.effect(
-    ServerConfig,
+    ServerConfig.ServerConfig,
     Effect.gen(function* () {
-      const config = yield* ServerConfig;
+      const config = yield* ServerConfig.ServerConfig;
       return {
         ...config,
         ...overrides,
-      } satisfies ServerConfigShape;
+        // Last, so the port cannot be overridden out from under
+        // makeCookieRequest — which builds the cookie name from this constant.
+        // An override that changed it would leave the server reading
+        // t3_session_<other> while every request still sent t3_session_13773,
+        // and the tests would fail for a reason unrelated to what they assert.
+        port: TEST_SERVER_PORT,
+      } satisfies ServerConfig.ServerConfig["Service"];
     }),
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-server-test-" })));
 
-const makeEnvironmentAuthLayer = (overrides?: Partial<ServerConfigShape>) =>
+const makeEnvironmentAuthLayer = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
   EnvironmentAuth.layer.pipe(
     Layer.provide(SqlitePersistenceMemory),
     Layer.provide(ServerSecretStore.layer),
@@ -33,13 +42,19 @@ const makeEnvironmentAuthLayer = (overrides?: Partial<ServerConfigShape>) =>
 
 const makeCookieRequest = (
   sessionToken: string,
-): Parameters<EnvironmentAuth.EnvironmentAuthShape["authenticateHttpRequest"]>[0] =>
+): Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]>[0] =>
   ({
     cookies: {
-      t3_session: sessionToken,
+      // Derived, not hardcoded: the name is port-scoped so concurrent servers
+      // on one hostname don't share a cookie. Mode and devUrl mirror
+      // ServerConfig.layerTest, so this resolves to whatever the server reads.
+      [resolveSessionCookieName({ mode: "web", port: TEST_SERVER_PORT, devUrl: undefined })]:
+        sessionToken,
     },
     headers: {},
-  }) as unknown as Parameters<EnvironmentAuth.EnvironmentAuthShape["authenticateHttpRequest"]>[0];
+  }) as unknown as Parameters<
+    EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]
+  >[0];
 
 const requestMetadata = {
   deviceType: "desktop" as const,
@@ -52,29 +67,25 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
   it.effect("classifies invalid bootstrap credential failures for the HTTP boundary", () =>
     Effect.sync(() => {
       const error = EnvironmentAuth.toBootstrapExchangeError(
-        new PairingGrantStore.BootstrapCredentialInvalidError({
-          message: "Unknown bootstrap credential.",
-        }),
+        new PairingGrantStore.UnknownBootstrapCredentialError({}),
       );
 
       expect(error._tag).toBe("ServerAuthInvalidCredentialError");
-      if (error._tag === "ServerAuthInvalidCredentialError") {
-        expect(error.reason).toBe("invalid_credential");
-      }
     }),
   );
 
   it.effect("maps unexpected bootstrap failures to 500", () =>
     Effect.sync(() => {
-      const error = EnvironmentAuth.toBootstrapExchangeError(
-        new PairingGrantStore.BootstrapCredentialInternalError({
-          message: "Failed to consume bootstrap credential.",
-          cause: new Error("sqlite is unavailable"),
-        }),
-      );
+      const cause = new PairingGrantStore.BootstrapCredentialConsumeError({
+        cause: new Error("sqlite is unavailable"),
+      });
+      const error = EnvironmentAuth.toBootstrapExchangeError(cause);
 
-      expect(error._tag).toBe("ServerAuthInternalError");
+      expect(error._tag).toBe("ServerAuthBootstrapCredentialValidationError");
       expect(error.message).toBe("Failed to validate bootstrap credential.");
+      if (error._tag === "ServerAuthBootstrapCredentialValidationError") {
+        expect(error.cause).toBe(cause);
+      }
     }),
   );
 
@@ -116,10 +127,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
         )
         .pipe(Effect.flip);
 
-      expect(error._tag).toBe("ServerAuthInvalidRequestError");
-      if (error._tag === "ServerAuthInvalidRequestError") {
-        expect(error.reason).toBe("scope_not_granted");
-      }
+      expect(error._tag).toBe("ServerAuthScopeNotGrantedError");
     }).pipe(Effect.provide(makeEnvironmentAuthLayer())),
   );
 
