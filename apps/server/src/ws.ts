@@ -125,6 +125,7 @@ import {
   scanClaudeLocalHistoryDryRun,
   scanClaudeLocalHistoryImportCandidates,
 } from "./claudeLocalHistory/ClaudeLocalHistory.ts";
+import * as LocalHistorySync from "./localHistory/LocalHistorySync.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -322,6 +323,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverCursorLocalHistoryImport, AuthOrchestrationOperateScope],
   [WS_METHODS.serverClaudeLocalHistoryDryRun, AuthOrchestrationReadScope],
   [WS_METHODS.serverClaudeLocalHistoryImport, AuthOrchestrationOperateScope],
+  [WS_METHODS.serverLocalHistorySyncNow, AuthOrchestrationOperateScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
   [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
@@ -448,6 +450,7 @@ const makeWsRpcLayer = (
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
       const sourceControlDiscovery = yield* SourceControlDiscovery.SourceControlDiscovery;
+      const localHistorySync = yield* LocalHistorySync.LocalHistorySync;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.automaticGitFetchInterval),
         Effect.catch((cause) =>
@@ -1641,6 +1644,10 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverLocalHistorySyncNow]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverLocalHistorySyncNow, localHistorySync.syncNow, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.cloudGetRelayClientStatus]: (_input) =>
           observeRpcEffect(WS_METHODS.cloudGetRelayClientStatus, relayClient.resolve, {
             "rpc.aggregate": "cloud",

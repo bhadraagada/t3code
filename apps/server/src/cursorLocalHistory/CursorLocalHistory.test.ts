@@ -5,9 +5,14 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
+  makeLocalHistoryImportHarness,
+  testLocalHistoryModelSelection,
+} from "../localHistory/importTestHarness.ts";
+import {
+  importCursorLocalHistoryCandidates,
   scanCursorLocalHistoryDryRun,
   scanCursorLocalHistoryImportCandidates,
 } from "./CursorLocalHistory.ts";
@@ -102,6 +107,85 @@ describe("CursorLocalHistory", () => {
           createdAt: expect.any(String),
         },
       ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.runPromise);
+  });
+
+  it("imports incrementally: appended source lines land as a delta, unchanged sources no-op", async () => {
+    await Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3code-cursor-local-history-incremental-test-",
+      });
+      const projectsDir = NodePath.join(root, ".cursor", "projects");
+      const chatsDir = NodePath.join(root, ".cursor", "chats");
+      const workspaceStorageDir = NodePath.join(root, "workspaceStorage");
+      const roots = { projectsDir, chatsDir, workspaceStorageDir };
+      const workspaceSlug = "c-Users-example-project";
+      const chatId = "11111111-1111-4111-8111-111111111111";
+      const transcriptPath = NodePath.join(
+        projectsDir,
+        workspaceSlug,
+        "agent-transcripts",
+        chatId,
+        `${chatId}.jsonl`,
+      );
+      const workspaceJsonPath = NodePath.join(workspaceStorageDir, "hash-1", "workspace.json");
+
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(transcriptPath), { recursive: true });
+        await NodeFSP.writeFile(
+          transcriptPath,
+          [
+            '{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\\nfirst question\\n</user_query>"}]}}',
+            '{"role":"assistant","message":{"content":[{"type":"text","text":"First answer."}]}}',
+            "",
+          ].join("\n"),
+        );
+        await NodeFSP.mkdir(NodePath.dirname(workspaceJsonPath), { recursive: true });
+        await NodeFSP.writeFile(
+          workspaceJsonPath,
+          '{"folder":"file:///c%3A/Users/example/project"}',
+        );
+      });
+
+      const harness = makeLocalHistoryImportHarness();
+      const importOnce = Effect.gen(function* () {
+        const candidates = yield* scanCursorLocalHistoryImportCandidates(roots);
+        return yield* importCursorLocalHistoryCandidates({
+          candidates,
+          modelSelection: testLocalHistoryModelSelection,
+          orchestrationEngine: harness.orchestrationEngine,
+          projectionSnapshotQuery: harness.projectionSnapshotQuery,
+        });
+      });
+
+      const first = yield* importOnce;
+      expect(first.errors).toEqual([]);
+      expect(first.importedThreadCount).toBe(1);
+      expect(first.importedMessageCount).toBe(2);
+      const threadId = first.threads[0]!.threadId;
+      expect(harness.threadMessages.get(threadId)).toHaveLength(2);
+
+      const second = yield* importOnce;
+      expect(second.errors).toEqual([]);
+      expect(second.importedThreadCount).toBe(0);
+      expect(second.importedMessageCount).toBe(0);
+      expect(harness.threadMessages.get(threadId)).toHaveLength(2);
+
+      yield* Effect.promise(() =>
+        NodeFSP.appendFile(
+          transcriptPath,
+          '{"role":"assistant","message":{"content":[{"type":"text","text":"Follow-up answer."}]}}\n',
+        ),
+      );
+
+      const third = yield* importOnce;
+      expect(third.errors).toEqual([]);
+      expect(third.importedThreadCount).toBe(1);
+      expect(third.importedMessageCount).toBe(1);
+      const messages = harness.threadMessages.get(threadId)!;
+      expect(messages).toHaveLength(3);
+      expect(messages.at(-1)?.text).toBe("Follow-up answer.");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.runPromise);
   });
 });

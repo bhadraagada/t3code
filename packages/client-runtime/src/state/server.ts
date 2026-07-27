@@ -365,5 +365,13 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:claude-local-history-import",
       tag: WS_METHODS.serverClaudeLocalHistoryImport,
     }),
+    localHistorySyncNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:local-history-sync-now",
+      tag: WS_METHODS.serverLocalHistorySyncNow,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
   };
 }

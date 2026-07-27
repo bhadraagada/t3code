@@ -9,6 +9,7 @@ import {
   type CursorLocalHistoryImportResult,
   type ClaudeLocalHistoryDryRunResult,
   type ClaudeLocalHistoryImportResult,
+  type LocalHistorySyncResult,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -25,6 +26,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  DAILY_LOCAL_HISTORY_SYNC_INTERVAL,
   DEFAULT_UNIFIED_SETTINGS,
   MAX_GLASS_OPACITY,
   MIN_GLASS_OPACITY,
@@ -718,6 +720,9 @@ export function GeneralSettingsPanel() {
   const importClaudeLocalHistory = useAtomCommand(serverEnvironment.claudeLocalHistoryImport, {
     reportFailure: false,
   });
+  const syncLocalHistory = useAtomCommand(serverEnvironment.localHistorySyncNow, {
+    reportFailure: false,
+  });
   const [cursorHistoryDryRun, setCursorHistoryDryRun] =
     useState<CursorLocalHistoryDryRunResult | null>(null);
   const [cursorHistoryImport, setCursorHistoryImport] =
@@ -740,6 +745,10 @@ export function GeneralSettingsPanel() {
   const [isScanningClaudeHistory, setIsScanningClaudeHistory] = useState(false);
   const [isImportingClaudeHistory, setIsImportingClaudeHistory] = useState(false);
   const [claudeHistoryError, setClaudeHistoryError] = useState<string | null>(null);
+  const [localHistorySyncResult, setLocalHistorySyncResult] =
+    useState<LocalHistorySyncResult | null>(null);
+  const [isSyncingLocalHistory, setIsSyncingLocalHistory] = useState(false);
+  const [localHistorySyncError, setLocalHistorySyncError] = useState<string | null>(null);
   const glassOpacityRatio =
     (settings.glassOpacity - MIN_GLASS_OPACITY) / (MAX_GLASS_OPACITY - MIN_GLASS_OPACITY);
   const glassOpacitySliderStyle = {
@@ -1000,6 +1009,60 @@ export function GeneralSettingsPanel() {
       }
     })();
   }, [claudeHistoryDryRun?.chatCount, environmentId, importClaudeLocalHistory]);
+
+  const syncLocalHistoryNow = useCallback(() => {
+    if (environmentId === null) {
+      setLocalHistorySyncError("No environment is selected.");
+      return;
+    }
+    setIsSyncingLocalHistory(true);
+    setLocalHistorySyncError(null);
+    void (async () => {
+      const result = await syncLocalHistory({
+        environmentId,
+        input: {},
+      });
+      setIsSyncingLocalHistory(false);
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        const message = error instanceof Error ? error.message : "Local history sync failed.";
+        setLocalHistorySyncError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not sync local history",
+            description: message,
+          }),
+        );
+        return;
+      }
+      setLocalHistorySyncResult(result.value);
+      const importedMessageCount =
+        result.value.cursor.importedMessageCount + result.value.claude.importedMessageCount;
+      const writebackMessageCount =
+        result.value.cursor.writebackMessageCount + result.value.claude.writebackMessageCount;
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: "Local history synced",
+          description: `${formatCursorHistoryNumber(importedMessageCount)} new messages imported${
+            result.value.writebackEnabled
+              ? ` and ${formatCursorHistoryNumber(writebackMessageCount)} written back`
+              : ""
+          }.`,
+        }),
+      );
+    })();
+  }, [environmentId, syncLocalHistory]);
+
+  const localHistorySyncEnabled = Duration.toMillis(settings.localHistorySyncInterval) > 0;
+  const localHistorySyncErrorCount = localHistorySyncResult
+    ? localHistorySyncResult.cursor.importErrorCount +
+      localHistorySyncResult.cursor.writebackErrorCount +
+      localHistorySyncResult.claude.importErrorCount +
+      localHistorySyncResult.claude.writebackErrorCount
+    : 0;
 
   return (
     <SettingsPageContainer>
@@ -1732,6 +1795,95 @@ export function GeneralSettingsPanel() {
             </div>
           ) : null}
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Local history sync">
+        <SettingsRow
+          title="Daily background sync"
+          description="Once a day, pull new messages from already-imported Cursor and Claude Code chats into their T3 threads. Imports are incremental; unchanged chats are left alone."
+          control={
+            <Switch
+              checked={localHistorySyncEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  localHistorySyncInterval: checked
+                    ? DAILY_LOCAL_HISTORY_SYNC_INTERVAL
+                    : Duration.zero,
+                })
+              }
+              aria-label="Toggle daily local history sync"
+            />
+          }
+        />
+        <SettingsRow
+          title="Write back to Cursor/Claude files"
+          description="Append T3-only messages to the original transcript files (Cursor agent-transcripts and ~/.claude/projects session files). This modifies Cursor and Claude Code history on disk — leave off unless you want two-way sync."
+          control={
+            <Switch
+              checked={settings.localHistorySyncWriteback}
+              onCheckedChange={(checked) => updateSettings({ localHistorySyncWriteback: checked })}
+              aria-label="Toggle local history writeback"
+            />
+          }
+        />
+        <SettingsRow
+          title="Sync now"
+          description="Run an incremental sync of both sources immediately."
+          status={
+            isSyncingLocalHistory ? (
+              "Syncing local history..."
+            ) : localHistorySyncError ? (
+              <span className="text-destructive/80">{localHistorySyncError}</span>
+            ) : localHistorySyncResult ? (
+              <>
+                Last sync imported{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(
+                    localHistorySyncResult.cursor.importedMessageCount +
+                      localHistorySyncResult.claude.importedMessageCount,
+                  )}
+                </span>{" "}
+                messages
+                {localHistorySyncResult.writebackEnabled ? (
+                  <>
+                    {" "}
+                    and wrote back{" "}
+                    <span className="font-mono tabular-nums">
+                      {formatCursorHistoryNumber(
+                        localHistorySyncResult.cursor.writebackMessageCount +
+                          localHistorySyncResult.claude.writebackMessageCount,
+                      )}
+                    </span>
+                  </>
+                ) : null}
+                .
+                {localHistorySyncErrorCount > 0 ? (
+                  <span className="text-destructive/80">
+                    {" "}
+                    {formatCursorHistoryNumber(localHistorySyncErrorCount)} errors.
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              "Runs the same incremental import as the scheduled sync."
+            )
+          }
+          control={
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={syncLocalHistoryNow}
+              disabled={isSyncingLocalHistory}
+            >
+              {isSyncingLocalHistory ? (
+                <LoaderIcon className="size-3 animate-spin" />
+              ) : (
+                <RefreshCwIcon className="size-3" />
+              )}
+              {isSyncingLocalHistory ? "Syncing" : "Sync now"}
+            </Button>
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="About">

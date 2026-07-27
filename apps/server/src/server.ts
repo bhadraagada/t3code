@@ -86,6 +86,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as CursorLocalHistory from "./cursorLocalHistory/CursorLocalHistory.ts";
 import * as ClaudeLocalHistory from "./claudeLocalHistory/ClaudeLocalHistory.ts";
+import * as LocalHistorySync from "./localHistory/LocalHistorySync.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -290,6 +291,12 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
 );
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+  // Merged before the core services below so every dependency LocalHistorySync
+  // needs (orchestration engine, projection query, server settings) is
+  // provided to it by the same layers. Separate .pipe() call: the main chain
+  // is already at TypeScript's 20-argument pipe overload limit.
+  Layer.provideMerge(LocalHistorySync.layer),
+).pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),

@@ -114,10 +114,28 @@ import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import * as LocalHistorySync from "./localHistory/LocalHistorySync.ts";
 import * as Data from "effect/Data";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
+const emptyLocalHistorySyncSourceSummary = {
+  scannedChatCount: 0,
+  importedThreadCount: 0,
+  importedMessageCount: 0,
+  skippedChatCount: 0,
+  importErrorCount: 0,
+  writebackThreadCount: 0,
+  writebackMessageCount: 0,
+  writebackErrorCount: 0,
+};
+const emptyLocalHistorySyncResult = {
+  startedAt: "1970-01-01T00:00:00.000Z",
+  finishedAt: "1970-01-01T00:00:00.000Z",
+  writebackEnabled: false,
+  cursor: emptyLocalHistorySyncSourceSummary,
+  claude: emptyLocalHistorySyncSourceSummary,
+};
 const defaultDesktopBootstrapToken = "test-desktop-bootstrap-token";
 const defaultModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -569,10 +587,16 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ExternalLauncher.ExternalLauncher)({
-          resolveAvailableEditors: () => Effect.succeed([]),
-          ...options?.layers?.externalLauncher,
-        }),
+        Layer.mergeAll(
+          Layer.mock(ExternalLauncher.ExternalLauncher)({
+            resolveAvailableEditors: () => Effect.succeed([]),
+            ...options?.layers?.externalLauncher,
+          }),
+          Layer.mock(LocalHistorySync.LocalHistorySync)({
+            syncNow: Effect.succeed(emptyLocalHistorySyncResult),
+            start: () => Effect.void,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({

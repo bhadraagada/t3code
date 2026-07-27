@@ -35,9 +35,14 @@ import * as Option from "effect/Option";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  localHistoryFingerprintHash,
+  localHistoryImportWatermark,
+  selectNewLocalHistoryMessages,
+} from "../localHistory/incrementalImport.ts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
-interface CursorLocalHistoryRoots {
+export interface CursorLocalHistoryRoots {
   readonly projectsDir: string;
   readonly chatsDir: string;
   readonly workspaceStorageDir: string;
@@ -347,10 +352,8 @@ async function readTranscriptStats(path: string): Promise<TranscriptStats> {
   };
 }
 
-async function readTranscriptMessages(path: string): Promise<CursorLocalHistoryImportMessage[]> {
-  const text = await NodeFSP.readFile(path, "utf8");
+export function parseCursorTranscriptMessages(text: string): CursorLocalHistoryImportMessage[] {
   const messages: CursorLocalHistoryImportMessage[] = [];
-  const fallbackCreatedAt = await safeStatMtimeIso(path);
   for (const line of text.split(/\r?\n/)) {
     if (line.trim().length === 0) continue;
     let parsed: unknown;
@@ -367,10 +370,18 @@ async function readTranscriptMessages(path: string): Promise<CursorLocalHistoryI
     messages.push({
       role,
       text: messageText,
-      createdAt: readCreatedAt(parsed) ?? fallbackCreatedAt,
+      createdAt: readCreatedAt(parsed),
     });
   }
   return messages;
+}
+
+async function readTranscriptMessages(path: string): Promise<CursorLocalHistoryImportMessage[]> {
+  const text = await NodeFSP.readFile(path, "utf8");
+  const fallbackCreatedAt = await safeStatMtimeIso(path);
+  return parseCursorTranscriptMessages(text).map((message) =>
+    message.createdAt === null ? { ...message, createdAt: fallbackCreatedAt } : message,
+  );
 }
 
 function parseWorkspaceJson(raw: string): { readonly workspacePath: string | null } {
@@ -636,7 +647,7 @@ function finalize(state: ScanState, scannedAt: string): CursorLocalHistoryDryRun
 
 export function scanCursorLocalHistoryDryRun(
   roots?: CursorLocalHistoryRoots,
-): Effect.Effect<CursorLocalHistoryDryRunResult, never, HostProcessPlatform> {
+): Effect.Effect<CursorLocalHistoryDryRunResult> {
   return Effect.gen(function* () {
     const scannedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
     const resolvedRoots =
@@ -672,7 +683,7 @@ function titleFromMessages(
 
 export function scanCursorLocalHistoryImportCandidates(
   roots?: CursorLocalHistoryRoots,
-): Effect.Effect<ReadonlyArray<CursorLocalHistoryImportCandidate>, never, HostProcessPlatform> {
+): Effect.Effect<ReadonlyArray<CursorLocalHistoryImportCandidate>> {
   return Effect.gen(function* () {
     const resolvedRoots =
       roots ?? defaultCursorLocalHistoryRoots(NodeOS.homedir(), yield* HostProcessPlatform);
@@ -739,10 +750,12 @@ function projectIdForCandidate(candidate: CursorLocalHistoryImportCandidate): Pr
   return ProjectIdSchema.make(stableImportId("cursor-import-project", [candidate.workspaceKey]));
 }
 
+export function cursorLocalHistoryThreadId(workspaceKey: string, chatId: string): ThreadId {
+  return ThreadIdSchema.make(stableImportId("cursor-import-thread", [workspaceKey, chatId]));
+}
+
 function threadIdForCandidate(candidate: CursorLocalHistoryImportCandidate): ThreadId {
-  return ThreadIdSchema.make(
-    stableImportId("cursor-import-thread", [candidate.workspaceKey, candidate.chatId]),
-  );
+  return cursorLocalHistoryThreadId(candidate.workspaceKey, candidate.chatId);
 }
 
 function commandIdForImport(parts: ReadonlyArray<string>): CommandId {
@@ -758,6 +771,24 @@ function messageIdForImport(
       candidate.workspaceKey,
       candidate.chatId,
       String(index),
+    ]),
+  );
+}
+
+// Content-addressed ids for delta-appended messages: unlike list indexes,
+// these stay stable when the capped source window slides.
+function messageIdForDeltaImport(
+  candidate: CursorLocalHistoryImportCandidate,
+  fingerprint: string,
+  occurrence: number,
+): MessageId {
+  return MessageIdSchema.make(
+    stableImportId("cursor-import-message", [
+      candidate.workspaceKey,
+      candidate.chatId,
+      "fp",
+      localHistoryFingerprintHash(fingerprint),
+      String(occurrence),
     ]),
   );
 }
@@ -800,6 +831,45 @@ export function importCursorLocalHistoryCandidates(input: {
 
         const createdAt =
           candidate.updatedAt ?? (yield* Effect.map(DateTime.now, DateTime.formatIso));
+        const threadId = threadIdForCandidate(candidate);
+        const messages = candidate.messages.slice(-MAX_IMPORT_MESSAGES_PER_CHAT);
+        const watermark = localHistoryImportWatermark(messages);
+        const messagesCommandId = commandIdForImport([
+          "messages",
+          candidate.workspaceKey,
+          candidate.chatId,
+          watermark,
+        ]);
+
+        const existingThread = yield* input.projectionSnapshotQuery.getThreadDetailById(threadId);
+        if (Option.isSome(existingThread)) {
+          // Already imported: append only the source messages missing from the
+          // T3 thread. An unchanged source dispatches nothing at all.
+          const delta = selectNewLocalHistoryMessages(existingThread.value.messages, messages);
+          if (delta.length === 0) return;
+          yield* input.orchestrationEngine.dispatch({
+            type: "thread.messages.import",
+            commandId: messagesCommandId,
+            threadId,
+            messages: delta.map(({ message, fingerprint, occurrence }) => ({
+              messageId: messageIdForDeltaImport(candidate, fingerprint, occurrence),
+              role: message.role,
+              text: message.text,
+              createdAt: message.createdAt ?? createdAt,
+            })),
+            createdAt,
+          });
+          importedThreadCount += 1;
+          importedMessageCount += delta.length;
+          threads.push({
+            chatId: candidate.chatId,
+            threadId,
+            title: candidate.title,
+            messageCount: delta.length,
+          });
+          return;
+        }
+
         const existingProject =
           yield* input.projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(
             candidate.workspacePath,
@@ -821,7 +891,6 @@ export function importCursorLocalHistoryCandidates(input: {
           importedProjectCount += 1;
         }
 
-        const threadId = threadIdForCandidate(candidate);
         yield* input.orchestrationEngine.dispatch({
           type: "thread.create",
           commandId: commandIdForImport(["thread", candidate.workspaceKey, candidate.chatId]),
@@ -837,10 +906,9 @@ export function importCursorLocalHistoryCandidates(input: {
         });
         importedThreadCount += 1;
 
-        const messages = candidate.messages.slice(-MAX_IMPORT_MESSAGES_PER_CHAT);
         yield* input.orchestrationEngine.dispatch({
           type: "thread.messages.import",
-          commandId: commandIdForImport(["messages", candidate.workspaceKey, candidate.chatId]),
+          commandId: messagesCommandId,
           threadId,
           messages: messages.map((message, index) => ({
             messageId: messageIdForImport(candidate, index),

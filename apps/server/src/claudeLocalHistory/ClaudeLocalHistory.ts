@@ -33,8 +33,13 @@ import * as Option from "effect/Option";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  localHistoryFingerprintHash,
+  localHistoryImportWatermark,
+  selectNewLocalHistoryMessages,
+} from "../localHistory/incrementalImport.ts";
 
-interface ClaudeLocalHistoryRoots {
+export interface ClaudeLocalHistoryRoots {
   readonly configDir: string;
   readonly projectsDir: string;
 }
@@ -199,15 +204,20 @@ interface TranscriptParseResult {
   readonly updatedAt: string | null;
 }
 
-async function parseTranscript(path: string): Promise<TranscriptParseResult> {
-  const chatId = NodePath.basename(path, ".jsonl");
-  const text = await NodeFSP.readFile(path, "utf8");
+export interface ClaudeTranscriptContent {
+  readonly workspacePath: string | null;
+  readonly title: string | null;
+  readonly sourceRecordCount: number;
+  readonly parseErrorCount: number;
+  readonly messages: ReadonlyArray<ClaudeLocalHistoryImportMessage>;
+}
+
+export function parseClaudeTranscriptContent(text: string): ClaudeTranscriptContent {
   const messages: ClaudeLocalHistoryImportMessage[] = [];
   let sourceRecordCount = 0;
   let parseErrorCount = 0;
   let workspacePath: string | null = null;
   let aiTitle: string | null = null;
-  const fallbackCreatedAt = await safeStatMtimeIso(path);
 
   for (const line of text.split(/\r?\n/)) {
     if (line.trim().length === 0) continue;
@@ -238,17 +248,35 @@ async function parseTranscript(path: string): Promise<TranscriptParseResult> {
     messages.push({
       role,
       text: messageText,
-      createdAt: readCreatedAt(record) ?? fallbackCreatedAt,
+      createdAt: readCreatedAt(record),
     });
   }
 
   return {
-    chatId,
     workspacePath,
     title: aiTitle,
-    messageCount: messages.length,
     sourceRecordCount,
     parseErrorCount,
+    messages,
+  };
+}
+
+async function parseTranscript(path: string): Promise<TranscriptParseResult> {
+  const chatId = NodePath.basename(path, ".jsonl");
+  const text = await NodeFSP.readFile(path, "utf8");
+  const fallbackCreatedAt = await safeStatMtimeIso(path);
+  const content = parseClaudeTranscriptContent(text);
+  const messages = content.messages.map((message) =>
+    message.createdAt === null ? { ...message, createdAt: fallbackCreatedAt } : message,
+  );
+
+  return {
+    chatId,
+    workspacePath: content.workspacePath,
+    title: content.title,
+    messageCount: messages.length,
+    sourceRecordCount: content.sourceRecordCount,
+    parseErrorCount: content.parseErrorCount,
     messages,
     updatedAt: fallbackCreatedAt,
   };
@@ -414,10 +442,12 @@ function projectIdForCandidate(candidate: ClaudeLocalHistoryImportCandidate): Pr
   return ProjectIdSchema.make(stableImportId("claude-import-project", [candidate.workspaceKey]));
 }
 
+export function claudeLocalHistoryThreadId(workspaceKey: string, chatId: string): ThreadId {
+  return ThreadIdSchema.make(stableImportId("claude-import-thread", [workspaceKey, chatId]));
+}
+
 function threadIdForCandidate(candidate: ClaudeLocalHistoryImportCandidate): ThreadId {
-  return ThreadIdSchema.make(
-    stableImportId("claude-import-thread", [candidate.workspaceKey, candidate.chatId]),
-  );
+  return claudeLocalHistoryThreadId(candidate.workspaceKey, candidate.chatId);
 }
 
 function commandIdForImport(parts: ReadonlyArray<string>): CommandId {
@@ -433,6 +463,24 @@ function messageIdForImport(
       candidate.workspaceKey,
       candidate.chatId,
       String(index),
+    ]),
+  );
+}
+
+// Content-addressed ids for delta-appended messages: unlike list indexes,
+// these stay stable when the capped source window slides.
+function messageIdForDeltaImport(
+  candidate: ClaudeLocalHistoryImportCandidate,
+  fingerprint: string,
+  occurrence: number,
+): MessageId {
+  return MessageIdSchema.make(
+    stableImportId("claude-import-message", [
+      candidate.workspaceKey,
+      candidate.chatId,
+      "fp",
+      localHistoryFingerprintHash(fingerprint),
+      String(occurrence),
     ]),
   );
 }
@@ -475,6 +523,45 @@ export function importClaudeLocalHistoryCandidates(input: {
 
         const createdAt =
           candidate.updatedAt ?? (yield* Effect.map(DateTime.now, DateTime.formatIso));
+        const threadId = threadIdForCandidate(candidate);
+        const messages = candidate.messages.slice(-MAX_IMPORT_MESSAGES_PER_CHAT);
+        const watermark = localHistoryImportWatermark(messages);
+        const messagesCommandId = commandIdForImport([
+          "messages",
+          candidate.workspaceKey,
+          candidate.chatId,
+          watermark,
+        ]);
+
+        const existingThread = yield* input.projectionSnapshotQuery.getThreadDetailById(threadId);
+        if (Option.isSome(existingThread)) {
+          // Already imported: append only the source messages missing from the
+          // T3 thread. An unchanged source dispatches nothing at all.
+          const delta = selectNewLocalHistoryMessages(existingThread.value.messages, messages);
+          if (delta.length === 0) return;
+          yield* input.orchestrationEngine.dispatch({
+            type: "thread.messages.import",
+            commandId: messagesCommandId,
+            threadId,
+            messages: delta.map(({ message, fingerprint, occurrence }) => ({
+              messageId: messageIdForDeltaImport(candidate, fingerprint, occurrence),
+              role: message.role,
+              text: message.text,
+              createdAt: message.createdAt ?? createdAt,
+            })),
+            createdAt,
+          });
+          importedThreadCount += 1;
+          importedMessageCount += delta.length;
+          threads.push({
+            chatId: candidate.chatId,
+            threadId,
+            title: candidate.title,
+            messageCount: delta.length,
+          });
+          return;
+        }
+
         const existingProject =
           yield* input.projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(
             candidate.workspacePath,
@@ -496,7 +583,6 @@ export function importClaudeLocalHistoryCandidates(input: {
           importedProjectCount += 1;
         }
 
-        const threadId = threadIdForCandidate(candidate);
         yield* input.orchestrationEngine.dispatch({
           type: "thread.create",
           commandId: commandIdForImport(["thread", candidate.workspaceKey, candidate.chatId]),
@@ -512,10 +598,9 @@ export function importClaudeLocalHistoryCandidates(input: {
         });
         importedThreadCount += 1;
 
-        const messages = candidate.messages.slice(-MAX_IMPORT_MESSAGES_PER_CHAT);
         yield* input.orchestrationEngine.dispatch({
           type: "thread.messages.import",
-          commandId: commandIdForImport(["messages", candidate.workspaceKey, candidate.chatId]),
+          commandId: messagesCommandId,
           threadId,
           messages: messages.map((message, index) => ({
             messageId: messageIdForImport(candidate, index),

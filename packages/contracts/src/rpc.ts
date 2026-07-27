@@ -144,6 +144,7 @@ import {
   ClaudeLocalHistoryImportInput,
   ClaudeLocalHistoryImportResult,
 } from "./claudeLocalHistory.ts";
+import { LocalHistorySyncNowInput, LocalHistorySyncResult } from "./localHistorySync.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -232,6 +233,7 @@ export const WS_METHODS = {
   serverCursorLocalHistoryImport: "server.cursorLocalHistory.import",
   serverClaudeLocalHistoryDryRun: "server.claudeLocalHistory.dryRun",
   serverClaudeLocalHistoryImport: "server.claudeLocalHistory.import",
+  serverLocalHistorySyncNow: "server.localHistory.syncNow",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -383,6 +385,12 @@ export const WsServerClaudeLocalHistoryImportRpc = Rpc.make(
     error: EnvironmentAuthorizationError,
   },
 );
+
+export const WsServerLocalHistorySyncNowRpc = Rpc.make(WS_METHODS.serverLocalHistorySyncNow, {
+  payload: LocalHistorySyncNowInput,
+  success: LocalHistorySyncResult,
+  error: EnvironmentAuthorizationError,
+});
 
 export const WsCloudGetRelayClientStatusRpc = Rpc.make(WS_METHODS.cloudGetRelayClientStatus, {
   payload: Schema.Struct({}),
@@ -767,6 +775,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerCursorLocalHistoryImportRpc,
   WsServerClaudeLocalHistoryDryRunRpc,
   WsServerClaudeLocalHistoryImportRpc,
+  WsServerLocalHistorySyncNowRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,

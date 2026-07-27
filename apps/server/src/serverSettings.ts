@@ -135,12 +135,15 @@ export class ServerSettingsService extends Context.Service<
 
 const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
   Effect.gen(function* () {
-    const { automaticGitFetchInterval, ...overridesForMerge } = overrides;
+    const { automaticGitFetchInterval, localHistorySyncInterval, ...overridesForMerge } = overrides;
     const merged = deepMerge(DEFAULT_SERVER_SETTINGS, overridesForMerge);
     const initialSettings = yield* normalizeServerSettings({
       ...merged,
       ...(automaticGitFetchInterval !== undefined
         ? { automaticGitFetchInterval: automaticGitFetchInterval as Duration.Duration }
+        : {}),
+      ...(localHistorySyncInterval !== undefined
+        ? { localHistorySyncInterval: localHistorySyncInterval as Duration.Duration }
         : {}),
     });
     const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);

@@ -5,9 +5,14 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
+  makeLocalHistoryImportHarness,
+  testLocalHistoryModelSelection,
+} from "../localHistory/importTestHarness.ts";
+import {
+  importClaudeLocalHistoryCandidates,
   scanClaudeLocalHistoryDryRun,
   scanClaudeLocalHistoryImportCandidates,
 } from "./ClaudeLocalHistory.ts";
@@ -80,6 +85,72 @@ describe("ClaudeLocalHistory", () => {
           createdAt: "2026-06-10T10:00:01.000Z",
         },
       ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.runPromise);
+  });
+
+  it("imports incrementally: appended source lines land as a delta, unchanged sources no-op", async () => {
+    await Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3code-claude-local-history-incremental-test-",
+      });
+      const configDir = NodePath.join(root, ".claude");
+      const projectsDir = NodePath.join(configDir, "projects");
+      const roots = { configDir, projectsDir };
+      const encodedProject = "C--Users-example-project";
+      const chatId = "11111111-1111-4111-8111-111111111111";
+      const transcriptPath = NodePath.join(projectsDir, encodedProject, `${chatId}.jsonl`);
+
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(transcriptPath), { recursive: true });
+        await NodeFSP.writeFile(
+          transcriptPath,
+          [
+            '{"type":"user","message":{"role":"user","content":"first question"},"cwd":"C:\\\\Users\\\\example\\\\project","timestamp":"2026-06-10T10:00:00.000Z"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"First answer."}]},"cwd":"C:\\\\Users\\\\example\\\\project","timestamp":"2026-06-10T10:00:01.000Z"}',
+            "",
+          ].join("\n"),
+        );
+      });
+
+      const harness = makeLocalHistoryImportHarness();
+      const importOnce = Effect.gen(function* () {
+        const candidates = yield* scanClaudeLocalHistoryImportCandidates(roots);
+        return yield* importClaudeLocalHistoryCandidates({
+          candidates,
+          modelSelection: testLocalHistoryModelSelection,
+          orchestrationEngine: harness.orchestrationEngine,
+          projectionSnapshotQuery: harness.projectionSnapshotQuery,
+        });
+      });
+
+      const first = yield* importOnce;
+      expect(first.errors).toEqual([]);
+      expect(first.importedThreadCount).toBe(1);
+      expect(first.importedMessageCount).toBe(2);
+      const threadId = first.threads[0]!.threadId;
+      expect(harness.threadMessages.get(threadId)).toHaveLength(2);
+
+      const second = yield* importOnce;
+      expect(second.errors).toEqual([]);
+      expect(second.importedThreadCount).toBe(0);
+      expect(second.importedMessageCount).toBe(0);
+      expect(harness.threadMessages.get(threadId)).toHaveLength(2);
+
+      yield* Effect.promise(() =>
+        NodeFSP.appendFile(
+          transcriptPath,
+          '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Follow-up answer."}]},"cwd":"C:\\\\Users\\\\example\\\\project","timestamp":"2026-06-10T10:05:00.000Z"}\n',
+        ),
+      );
+
+      const third = yield* importOnce;
+      expect(third.errors).toEqual([]);
+      expect(third.importedThreadCount).toBe(1);
+      expect(third.importedMessageCount).toBe(1);
+      const messages = harness.threadMessages.get(threadId)!;
+      expect(messages).toHaveLength(3);
+      expect(messages.at(-1)?.text).toBe("Follow-up answer.");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.runPromise);
   });
 });

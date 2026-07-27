@@ -76,7 +76,7 @@ export function applyServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
-  const { automaticGitFetchInterval, ...patchForMerge } = patch;
+  const { automaticGitFetchInterval, localHistorySyncInterval, ...patchForMerge } = patch;
   const next = deepMerge(current, patchForMerge);
   const nextWithReplacements = {
     ...next,
@@ -84,6 +84,7 @@ export function applyServerSettingsPatch(
       ? { providerInstances: patch.providerInstances }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+    ...(localHistorySyncInterval !== undefined ? { localHistorySyncInterval } : {}),
   };
   if (!selectionPatch) {
     return nextWithReplacements;
