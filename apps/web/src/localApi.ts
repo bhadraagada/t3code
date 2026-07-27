@@ -78,6 +78,8 @@ function createBrowserLocalApi(): LocalApi {
       signalProcess: () => Promise.reject(unavailableLocalBackendError()),
       cursorLocalHistoryDryRun: () => Promise.reject(unavailableLocalBackendError()),
       cursorLocalHistoryImport: () => Promise.reject(unavailableLocalBackendError()),
+      claudeLocalHistoryDryRun: () => Promise.reject(unavailableLocalBackendError()),
+      claudeLocalHistoryImport: () => Promise.reject(unavailableLocalBackendError()),
     },
   };
 }

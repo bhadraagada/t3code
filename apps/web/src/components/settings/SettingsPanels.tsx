@@ -7,6 +7,8 @@ import {
   defaultInstanceIdForDriver,
   type CursorLocalHistoryDryRunResult,
   type CursorLocalHistoryImportResult,
+  type ClaudeLocalHistoryDryRunResult,
+  type ClaudeLocalHistoryImportResult,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -148,6 +150,7 @@ const CURSOR_HISTORY_WORKSPACE_PREVIEW_LIMIT = 6;
 const CURSOR_HISTORY_ERROR_PREVIEW_LIMIT = 4;
 const CURSOR_HISTORY_SOURCE_PREVIEW_LIMIT = 5;
 const CURSOR_HISTORY_IMPORT_BATCH_SIZE = 25;
+const CLAUDE_HISTORY_IMPORT_BATCH_SIZE = 25;
 
 function formatCursorHistoryNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -248,6 +251,80 @@ function CursorLocalHistoryDryRunDetails({ result }: { result: CursorLocalHistor
               </div>
             ))}
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ClaudeLocalHistoryDryRunDetails({ result }: { result: ClaudeLocalHistoryDryRunResult }) {
+  const previewWorkspaces = result.workspaces.slice(0, CURSOR_HISTORY_WORKSPACE_PREVIEW_LIMIT);
+  const previewErrors = result.errors.slice(0, CURSOR_HISTORY_ERROR_PREVIEW_LIMIT);
+
+  return (
+    <div className="mt-3 space-y-3 rounded-xl border border-border/60 bg-muted/25 p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <CursorHistoryMetric label="workspaces" value={result.workspaceCount} />
+        <CursorHistoryMetric label="chats" value={result.chatCount} />
+        <CursorHistoryMetric label="messages" value={result.messageCount} />
+        <CursorHistoryMetric label="parse errors" value={result.parseErrorCount} />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            Top workspaces
+          </div>
+          <div className="space-y-1.5">
+            {previewWorkspaces.length > 0 ? (
+              previewWorkspaces.map((workspace) => (
+                <div
+                  key={workspace.workspaceKey}
+                  className="rounded-lg border border-border/50 bg-background/70 px-2.5 py-2"
+                >
+                  <div className="truncate text-xs font-medium text-foreground">
+                    {workspace.workspacePath ?? workspace.workspaceKey}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {formatCursorHistoryNumber(workspace.chatCount)} chats ·{" "}
+                    {formatCursorHistoryNumber(workspace.messageCount)} messages
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-lg border border-dashed border-border/60 px-2.5 py-2 text-xs text-muted-foreground">
+                No local Claude Code chats found yet.
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            Source roots
+          </div>
+          <code
+            className="block truncate rounded-lg border border-border/50 bg-background/70 px-2.5 py-2 font-mono text-[11px] text-muted-foreground"
+            title={result.roots.projectsDir}
+          >
+            {result.roots.projectsDir}
+          </code>
+        </div>
+      </div>
+      {previewErrors.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-destructive/80">
+            Scan issues
+          </div>
+          {previewErrors.map((error) => (
+            <div
+              key={`${error.kind}:${error.path}:${error.message}`}
+              className="rounded-lg border border-destructive/20 bg-destructive/5 px-2.5 py-2"
+            >
+              <div className="truncate font-mono text-[11px] text-muted-foreground">
+                {error.path}
+              </div>
+              <div className="mt-1 text-[11px] text-muted-foreground">{error.message}</div>
+            </div>
+          ))}
         </div>
       ) : null}
     </div>
@@ -635,6 +712,12 @@ export function GeneralSettingsPanel() {
   const importCursorLocalHistory = useAtomCommand(serverEnvironment.cursorLocalHistoryImport, {
     reportFailure: false,
   });
+  const scanClaudeLocalHistory = useAtomCommand(serverEnvironment.claudeLocalHistoryDryRun, {
+    reportFailure: false,
+  });
+  const importClaudeLocalHistory = useAtomCommand(serverEnvironment.claudeLocalHistoryImport, {
+    reportFailure: false,
+  });
   const [cursorHistoryDryRun, setCursorHistoryDryRun] =
     useState<CursorLocalHistoryDryRunResult | null>(null);
   const [cursorHistoryImport, setCursorHistoryImport] =
@@ -646,6 +729,17 @@ export function GeneralSettingsPanel() {
   const [isScanningCursorHistory, setIsScanningCursorHistory] = useState(false);
   const [isImportingCursorHistory, setIsImportingCursorHistory] = useState(false);
   const [cursorHistoryError, setCursorHistoryError] = useState<string | null>(null);
+  const [claudeHistoryDryRun, setClaudeHistoryDryRun] =
+    useState<ClaudeLocalHistoryDryRunResult | null>(null);
+  const [claudeHistoryImport, setClaudeHistoryImport] =
+    useState<ClaudeLocalHistoryImportResult | null>(null);
+  const [claudeHistoryImportProgress, setClaudeHistoryImportProgress] = useState<{
+    readonly completed: number;
+    readonly total: number;
+  } | null>(null);
+  const [isScanningClaudeHistory, setIsScanningClaudeHistory] = useState(false);
+  const [isImportingClaudeHistory, setIsImportingClaudeHistory] = useState(false);
+  const [claudeHistoryError, setClaudeHistoryError] = useState<string | null>(null);
   const glassOpacityRatio =
     (settings.glassOpacity - MIN_GLASS_OPACITY) / (MAX_GLASS_OPACITY - MIN_GLASS_OPACITY);
   const glassOpacitySliderStyle = {
@@ -793,6 +887,119 @@ export function GeneralSettingsPanel() {
       }
     })();
   }, [cursorHistoryDryRun?.chatCount, environmentId, importCursorLocalHistory]);
+
+  const scanClaudeHistory = useCallback(() => {
+    if (environmentId === null) {
+      setClaudeHistoryError("No environment is selected.");
+      return;
+    }
+    setIsScanningClaudeHistory(true);
+    setClaudeHistoryError(null);
+    void (async () => {
+      const result = await scanClaudeLocalHistory({
+        environmentId,
+        input: {},
+      });
+      setIsScanningClaudeHistory(false);
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        const message = error instanceof Error ? error.message : "Claude history scan failed.";
+        setClaudeHistoryError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not scan Claude history",
+            description: message,
+          }),
+        );
+        return;
+      }
+      setClaudeHistoryDryRun(result.value);
+    })();
+  }, [environmentId, scanClaudeLocalHistory]);
+
+  const importClaudeHistory = useCallback(() => {
+    if (environmentId === null) {
+      setClaudeHistoryError("No environment is selected.");
+      return;
+    }
+    setIsImportingClaudeHistory(true);
+    setClaudeHistoryImportProgress({ completed: 0, total: claudeHistoryDryRun?.chatCount ?? 0 });
+    setClaudeHistoryError(null);
+    void (async () => {
+      let offset = 0;
+      let total = claudeHistoryDryRun?.chatCount ?? 0;
+      let aggregate: ClaudeLocalHistoryImportResult = {
+        totalCandidateCount: total,
+        importedCandidateOffset: 0,
+        importedCandidateLimit: 0,
+        importedProjectCount: 0,
+        importedThreadCount: 0,
+        importedMessageCount: 0,
+        skippedChatCount: 0,
+        errors: [],
+        threads: [],
+      };
+
+      try {
+        do {
+          const batch = await importClaudeLocalHistory({
+            environmentId,
+            input: {
+              offset,
+              limit: CLAUDE_HISTORY_IMPORT_BATCH_SIZE,
+            },
+          });
+          if (batch._tag === "Failure") {
+            if (isAtomCommandInterrupted(batch)) return;
+            throw squashAtomCommandFailure(batch);
+          }
+          const result = batch.value;
+          total = result.totalCandidateCount;
+          const completed = Math.min(
+            result.totalCandidateCount,
+            result.importedCandidateOffset + result.importedCandidateLimit,
+          );
+          aggregate = {
+            totalCandidateCount: result.totalCandidateCount,
+            importedCandidateOffset: 0,
+            importedCandidateLimit: completed,
+            importedProjectCount: aggregate.importedProjectCount + result.importedProjectCount,
+            importedThreadCount: aggregate.importedThreadCount + result.importedThreadCount,
+            importedMessageCount: aggregate.importedMessageCount + result.importedMessageCount,
+            skippedChatCount: aggregate.skippedChatCount + result.skippedChatCount,
+            errors: [...aggregate.errors, ...result.errors],
+            threads: [...aggregate.threads, ...result.threads],
+          };
+          setClaudeHistoryImport(aggregate);
+          setClaudeHistoryImportProgress({ completed, total });
+          offset = completed;
+        } while (offset < total);
+
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Claude history imported",
+            description: `${formatCursorHistoryNumber(aggregate.importedThreadCount)} chats and ${formatCursorHistoryNumber(aggregate.importedMessageCount)} messages are now T3 threads.`,
+          }),
+        );
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Claude history import failed.";
+        setClaudeHistoryError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not import Claude history",
+            description: message,
+          }),
+        );
+      } finally {
+        setIsImportingClaudeHistory(false);
+        setClaudeHistoryImportProgress(null);
+      }
+    })();
+  }, [claudeHistoryDryRun?.chatCount, environmentId, importClaudeLocalHistory]);
 
   return (
     <SettingsPageContainer>
@@ -1413,6 +1620,112 @@ export function GeneralSettingsPanel() {
               {cursorHistoryImport.skippedChatCount > 0 ? (
                 <div className="mt-1 text-destructive/80">
                   Skipped {formatCursorHistoryNumber(cursorHistoryImport.skippedChatCount)} chats
+                  without known workspace paths.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Claude history">
+        <SettingsRow
+          title="Local Claude Code runs"
+          description="Scan and import Claude Code sessions from ~/.claude/projects. Claude Desktop cloud chats are not available locally."
+          status={
+            claudeHistoryImportProgress ? (
+              <>
+                Importing{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(claudeHistoryImportProgress.completed)}
+                </span>{" "}
+                /{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(claudeHistoryImportProgress.total)}
+                </span>{" "}
+                chats.
+              </>
+            ) : claudeHistoryImport ? (
+              <>
+                Imported{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(claudeHistoryImport.importedThreadCount)}
+                </span>{" "}
+                chats and{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(claudeHistoryImport.importedMessageCount)}
+                </span>{" "}
+                messages. They are now normal T3 threads.
+              </>
+            ) : claudeHistoryDryRun ? (
+              <>
+                Last scan found{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(claudeHistoryDryRun.chatCount)}
+                </span>{" "}
+                chats across{" "}
+                <span className="font-mono tabular-nums">
+                  {formatCursorHistoryNumber(claudeHistoryDryRun.workspaceCount)}
+                </span>{" "}
+                workspaces.
+              </>
+            ) : claudeHistoryError ? (
+              <span className="text-destructive/80">{claudeHistoryError}</span>
+            ) : (
+              "Run a dry scan to preview Claude Code history."
+            )
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={scanClaudeHistory}
+                disabled={isScanningClaudeHistory || isImportingClaudeHistory}
+              >
+                {isScanningClaudeHistory ? (
+                  <LoaderIcon className="size-3 animate-spin" />
+                ) : (
+                  <RefreshCwIcon className="size-3" />
+                )}
+                {isScanningClaudeHistory ? "Scanning" : "Scan"}
+              </Button>
+              <Button
+                size="xs"
+                variant="default"
+                onClick={importClaudeHistory}
+                disabled={isScanningClaudeHistory || isImportingClaudeHistory}
+              >
+                {isImportingClaudeHistory ? <LoaderIcon className="size-3 animate-spin" /> : null}
+                {isImportingClaudeHistory && claudeHistoryImportProgress
+                  ? `${formatCursorHistoryNumber(claudeHistoryImportProgress.completed)} / ${formatCursorHistoryNumber(claudeHistoryImportProgress.total)}`
+                  : isImportingClaudeHistory
+                    ? "Importing"
+                    : "Import"}
+              </Button>
+            </div>
+          }
+        >
+          {claudeHistoryDryRun ? (
+            <ClaudeLocalHistoryDryRunDetails result={claudeHistoryDryRun} />
+          ) : null}
+          {claudeHistoryImport ? (
+            <div className="mt-3 rounded-xl border border-border/60 bg-muted/25 p-3 text-xs text-muted-foreground">
+              {claudeHistoryImportProgress ? (
+                <div className="mb-1">
+                  Importing batch {formatCursorHistoryNumber(claudeHistoryImportProgress.completed)}{" "}
+                  / {formatCursorHistoryNumber(claudeHistoryImportProgress.total)} chats.
+                </div>
+              ) : null}
+              <div>
+                Imported {formatCursorHistoryNumber(claudeHistoryImport.importedProjectCount)}{" "}
+                projects, {formatCursorHistoryNumber(claudeHistoryImport.importedThreadCount)}{" "}
+                threads, and {formatCursorHistoryNumber(claudeHistoryImport.importedMessageCount)}{" "}
+                messages.
+              </div>
+              {claudeHistoryImport.skippedChatCount > 0 ? (
+                <div className="mt-1 text-destructive/80">
+                  Skipped {formatCursorHistoryNumber(claudeHistoryImport.skippedChatCount)} chats
                   without known workspace paths.
                 </div>
               ) : null}

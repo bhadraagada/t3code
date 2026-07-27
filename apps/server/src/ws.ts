@@ -120,6 +120,11 @@ import {
   scanCursorLocalHistoryDryRun,
   scanCursorLocalHistoryImportCandidates,
 } from "./cursorLocalHistory/CursorLocalHistory.ts";
+import {
+  importClaudeLocalHistoryCandidates,
+  scanClaudeLocalHistoryDryRun,
+  scanClaudeLocalHistoryImportCandidates,
+} from "./claudeLocalHistory/ClaudeLocalHistory.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -315,6 +320,8 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
   [WS_METHODS.serverCursorLocalHistoryDryRun, AuthOrchestrationReadScope],
   [WS_METHODS.serverCursorLocalHistoryImport, AuthOrchestrationOperateScope],
+  [WS_METHODS.serverClaudeLocalHistoryDryRun, AuthOrchestrationReadScope],
+  [WS_METHODS.serverClaudeLocalHistoryImport, AuthOrchestrationOperateScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
   [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
@@ -1587,6 +1594,41 @@ const makeWsRpcLayer = (
                 ),
               ]);
               return yield* importCursorLocalHistoryCandidates({
+                candidates,
+                ...(input.offset !== undefined ? { offset: input.offset } : {}),
+                ...(input.limit !== undefined ? { limit: input.limit } : {}),
+                modelSelection: settings.textGenerationModelSelection,
+                orchestrationEngine,
+                projectionSnapshotQuery,
+              });
+            }),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverClaudeLocalHistoryDryRun]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverClaudeLocalHistoryDryRun,
+            scanClaudeLocalHistoryDryRun(),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverClaudeLocalHistoryImport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverClaudeLocalHistoryImport,
+            Effect.gen(function* () {
+              const [candidates, settings] = yield* Effect.all([
+                scanClaudeLocalHistoryImportCandidates(),
+                serverSettings.getSettings.pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Failed to read settings for Claude history import", {
+                      detail: error.message,
+                    }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
+                  ),
+                ),
+              ]);
+              return yield* importClaudeLocalHistoryCandidates({
                 candidates,
                 ...(input.offset !== undefined ? { offset: input.offset } : {}),
                 ...(input.limit !== undefined ? { limit: input.limit } : {}),

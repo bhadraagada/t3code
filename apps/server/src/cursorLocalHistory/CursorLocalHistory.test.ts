@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import fsPromises from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -42,8 +42,8 @@ describe("CursorLocalHistory", () => {
       const storeDbPath = NodePath.join(chatsDir, "hash-1", chatId, "store.db");
 
       yield* Effect.promise(async () => {
-        await fsPromises.mkdir(NodePath.dirname(transcriptPath), { recursive: true });
-        await fsPromises.writeFile(
+        await NodeFSP.mkdir(NodePath.dirname(transcriptPath), { recursive: true });
+        await NodeFSP.writeFile(
           transcriptPath,
           [
             '{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Thursday</timestamp>\\n<user_query>\\nepisodic.db\\nvector_index.db\\n\\nget these too and put into db yea\\n</user_query>"}]}}',
@@ -55,18 +55,18 @@ describe("CursorLocalHistory", () => {
             "",
           ].join("\n"),
         );
-        await fsPromises.mkdir(NodePath.dirname(subagentTranscriptPath), { recursive: true });
-        await fsPromises.writeFile(
+        await NodeFSP.mkdir(NodePath.dirname(subagentTranscriptPath), { recursive: true });
+        await NodeFSP.writeFile(
           subagentTranscriptPath,
           '{"role":"assistant","message":{"content":[{"type":"text","text":"ignored"}]}}',
         );
-        await fsPromises.mkdir(NodePath.dirname(workspaceJsonPath), { recursive: true });
-        await fsPromises.writeFile(
+        await NodeFSP.mkdir(NodePath.dirname(workspaceJsonPath), { recursive: true });
+        await NodeFSP.writeFile(
           workspaceJsonPath,
           '{"folder":"file:///c%3A/Users/example/project"}',
         );
-        await fsPromises.mkdir(NodePath.dirname(storeDbPath), { recursive: true });
-        await fsPromises.writeFile(storeDbPath, "");
+        await NodeFSP.mkdir(NodePath.dirname(storeDbPath), { recursive: true });
+        await NodeFSP.writeFile(storeDbPath, "");
       });
 
       const result = yield* scanCursorLocalHistoryDryRun({

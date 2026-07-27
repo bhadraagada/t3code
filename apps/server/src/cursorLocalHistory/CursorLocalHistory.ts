@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import fsPromises from "node:fs/promises";
-import type { Dirent } from "node:fs";
-import { fileURLToPath } from "node:url";
-import * as NodeOs from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import type * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import type {
   CursorLocalHistoryImportResult,
@@ -35,6 +35,7 @@ import * as Option from "effect/Option";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 interface CursorLocalHistoryRoots {
   readonly projectsDir: string;
@@ -111,11 +112,11 @@ export interface CursorLocalHistoryImportCandidate {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_IMPORT_MESSAGES_PER_CHAT = 2_000;
 
-function defaultWorkspaceStorageDir(homeDir: string): string {
+function defaultWorkspaceStorageDir(homeDir: string, platform: NodeJS.Platform): string {
   if (process.env.APPDATA) {
     return NodePath.join(process.env.APPDATA, "Cursor", "User", "workspaceStorage");
   }
-  switch (process.platform) {
+  switch (platform) {
     case "darwin":
       return NodePath.join(
         homeDir,
@@ -133,12 +134,13 @@ function defaultWorkspaceStorageDir(homeDir: string): string {
 }
 
 export function defaultCursorLocalHistoryRoots(
-  homeDir = NodeOs.homedir(),
+  homeDir = NodeOS.homedir(),
+  platform: NodeJS.Platform = "linux",
 ): CursorLocalHistoryRoots {
   return {
     projectsDir: NodePath.join(homeDir, ".cursor", "projects"),
     chatsDir: NodePath.join(homeDir, ".cursor", "chats"),
-    workspaceStorageDir: defaultWorkspaceStorageDir(homeDir),
+    workspaceStorageDir: defaultWorkspaceStorageDir(homeDir, platform),
   };
 }
 
@@ -172,9 +174,9 @@ function sourceRef(kind: CursorLocalHistorySourceKind, path: string): CursorLoca
   return { kind, path };
 }
 
-async function safeReadDirectory(path: string): Promise<Dirent[]> {
+async function safeReadDirectory(path: string): Promise<NodeFS.Dirent[]> {
   try {
-    return await fsPromises.readdir(path, { withFileTypes: true });
+    return await NodeFSP.readdir(path, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -182,7 +184,7 @@ async function safeReadDirectory(path: string): Promise<Dirent[]> {
 
 async function safeStatMtimeIso(path: string): Promise<string | null> {
   try {
-    const stat = await fsPromises.stat(path);
+    const stat = await NodeFSP.stat(path);
     return toIsoFromMillis(stat.mtimeMs);
   } catch {
     return null;
@@ -191,8 +193,8 @@ async function safeStatMtimeIso(path: string): Promise<string | null> {
 
 async function collectFiles(
   root: string,
-  predicate: (path: string, dirent: Dirent) => boolean,
-  options: { readonly skipDirectory?: (path: string, dirent: Dirent) => boolean } = {},
+  predicate: (path: string, dirent: NodeFS.Dirent) => boolean,
+  options: { readonly skipDirectory?: (path: string, dirent: NodeFS.Dirent) => boolean } = {},
 ): Promise<string[]> {
   const pending = [root];
   const files: string[] = [];
@@ -322,7 +324,7 @@ async function readTranscriptStats(path: string): Promise<TranscriptStats> {
   const chatId = UUID_PATTERN.test(NodePath.basename(path, ".jsonl"))
     ? NodePath.basename(path, ".jsonl")
     : NodePath.basename(NodePath.dirname(path));
-  const text = await fsPromises.readFile(path, "utf8");
+  const text = await NodeFSP.readFile(path, "utf8");
   let messageCount = 0;
   let sourceRecordCount = 0;
   let parseErrorCount = 0;
@@ -346,7 +348,7 @@ async function readTranscriptStats(path: string): Promise<TranscriptStats> {
 }
 
 async function readTranscriptMessages(path: string): Promise<CursorLocalHistoryImportMessage[]> {
-  const text = await fsPromises.readFile(path, "utf8");
+  const text = await NodeFSP.readFile(path, "utf8");
   const messages: CursorLocalHistoryImportMessage[] = [];
   const fallbackCreatedAt = await safeStatMtimeIso(path);
   for (const line of text.split(/\r?\n/)) {
@@ -378,7 +380,7 @@ function parseWorkspaceJson(raw: string): { readonly workspacePath: string | nul
   if (typeof folder !== "string" || folder.trim().length === 0) return { workspacePath: null };
   if (folder.startsWith("file://")) {
     try {
-      return { workspacePath: fileURLToPath(folder) };
+      return { workspacePath: NodeURL.fileURLToPath(folder) };
     } catch {
       return { workspacePath: null };
     }
@@ -477,7 +479,7 @@ async function scanWorkspaceStorage(state: ScanState): Promise<{
       "workspace.json",
     );
     try {
-      const raw = await fsPromises.readFile(workspaceJsonPath, "utf8");
+      const raw = await NodeFSP.readFile(workspaceJsonPath, "utf8");
       const { workspacePath } = parseWorkspaceJson(raw);
       const workspaceKey = workspacePath ?? `cursor-workspace-hash:${workspaceHash}`;
       const workspaceSlug = workspacePath ? deriveCursorWorkspaceSlug(workspacePath) : null;
@@ -633,12 +635,14 @@ function finalize(state: ScanState, scannedAt: string): CursorLocalHistoryDryRun
 }
 
 export function scanCursorLocalHistoryDryRun(
-  roots: CursorLocalHistoryRoots = defaultCursorLocalHistoryRoots(),
-): Effect.Effect<CursorLocalHistoryDryRunResult> {
+  roots?: CursorLocalHistoryRoots,
+): Effect.Effect<CursorLocalHistoryDryRunResult, never, HostProcessPlatform> {
   return Effect.gen(function* () {
     const scannedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
+    const resolvedRoots =
+      roots ?? defaultCursorLocalHistoryRoots(NodeOS.homedir(), yield* HostProcessPlatform);
     const state: ScanState = {
-      roots,
+      roots: resolvedRoots,
       workspacesByKey: new Map(),
       chatsByKey: new Map(),
       errors: [],
@@ -667,50 +671,57 @@ function titleFromMessages(
 }
 
 export function scanCursorLocalHistoryImportCandidates(
-  roots: CursorLocalHistoryRoots = defaultCursorLocalHistoryRoots(),
-): Effect.Effect<ReadonlyArray<CursorLocalHistoryImportCandidate>> {
-  return Effect.promise(async () => {
-    const state: ScanState = {
-      roots,
-      workspacesByKey: new Map(),
-      chatsByKey: new Map(),
-      errors: [],
-    };
-    const { hashToWorkspaceKey, slugToWorkspacePath } = await scanWorkspaceStorage(state);
-    await scanProjectTranscripts(state, slugToWorkspacePath);
-    await scanChatStores(state, hashToWorkspaceKey);
+  roots?: CursorLocalHistoryRoots,
+): Effect.Effect<ReadonlyArray<CursorLocalHistoryImportCandidate>, never, HostProcessPlatform> {
+  return Effect.gen(function* () {
+    const resolvedRoots =
+      roots ?? defaultCursorLocalHistoryRoots(NodeOS.homedir(), yield* HostProcessPlatform);
+    return yield* Effect.promise(async () => {
+      const state: ScanState = {
+        roots: resolvedRoots,
+        workspacesByKey: new Map(),
+        chatsByKey: new Map(),
+        errors: [],
+      };
+      const { hashToWorkspaceKey, slugToWorkspacePath } = await scanWorkspaceStorage(state);
+      await scanProjectTranscripts(state, slugToWorkspacePath);
+      await scanChatStores(state, hashToWorkspaceKey);
 
-    const candidates: CursorLocalHistoryImportCandidate[] = [];
-    for (const chat of state.chatsByKey.values()) {
-      const transcriptSources = chat.sources.filter(
-        (source) => source.kind === "agent-transcripts",
+      const candidates: CursorLocalHistoryImportCandidate[] = [];
+      for (const chat of state.chatsByKey.values()) {
+        const transcriptSources = chat.sources.filter(
+          (source) => source.kind === "agent-transcripts",
+        );
+        if (transcriptSources.length === 0) continue;
+        const messagesBySource = await Promise.all(
+          transcriptSources.map((source) => readTranscriptMessages(source.path)),
+        );
+        const messages = messagesBySource.flat();
+        if (messages.length === 0) continue;
+        candidates.push({
+          chatId: chat.chatId,
+          workspaceKey: chat.workspaceKey,
+          workspacePath: chat.workspacePath,
+          title: titleFromMessages(chat.chatId, messages),
+          updatedAt: chat.updatedAt,
+          sources: chat.sources,
+          messages,
+        });
+      }
+      return candidates.sort(
+        (left, right) =>
+          (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "") ||
+          left.chatId.localeCompare(right.chatId),
       );
-      if (transcriptSources.length === 0) continue;
-      const messagesBySource = await Promise.all(
-        transcriptSources.map((source) => readTranscriptMessages(source.path)),
-      );
-      const messages = messagesBySource.flat();
-      if (messages.length === 0) continue;
-      candidates.push({
-        chatId: chat.chatId,
-        workspaceKey: chat.workspaceKey,
-        workspacePath: chat.workspacePath,
-        title: titleFromMessages(chat.chatId, messages),
-        updatedAt: chat.updatedAt,
-        sources: chat.sources,
-        messages,
-      });
-    }
-    return candidates.sort(
-      (left, right) =>
-        (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "") ||
-        left.chatId.localeCompare(right.chatId),
-    );
+    });
   });
 }
 
 function stableImportId(prefix: string, parts: ReadonlyArray<string>): string {
-  const digest = createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 24);
+  const digest = NodeCrypto.createHash("sha256")
+    .update(parts.join("\0"))
+    .digest("hex")
+    .slice(0, 24);
   return `${prefix}-${digest}`;
 }
 

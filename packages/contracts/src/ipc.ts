@@ -63,6 +63,11 @@ import type {
   CursorLocalHistoryImportInput,
   CursorLocalHistoryImportResult,
 } from "./cursorLocalHistory.ts";
+import type {
+  ClaudeLocalHistoryDryRunResult,
+  ClaudeLocalHistoryImportInput,
+  ClaudeLocalHistoryImportResult,
+} from "./claudeLocalHistory.ts";
 import * as Schema from "effect/Schema";
 import type {
   DiscoveredLocalServerList,
@@ -1164,6 +1169,10 @@ export interface LocalApi {
     cursorLocalHistoryImport: (
       input?: CursorLocalHistoryImportInput,
     ) => Promise<CursorLocalHistoryImportResult>;
+    claudeLocalHistoryDryRun: () => Promise<ClaudeLocalHistoryDryRunResult>;
+    claudeLocalHistoryImport: (
+      input?: ClaudeLocalHistoryImportInput,
+    ) => Promise<ClaudeLocalHistoryImportResult>;
   };
 }
 

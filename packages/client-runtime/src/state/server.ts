@@ -357,5 +357,13 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:cursor-local-history-import",
       tag: WS_METHODS.serverCursorLocalHistoryImport,
     }),
+    claudeLocalHistoryDryRun: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:claude-local-history-dry-run",
+      tag: WS_METHODS.serverClaudeLocalHistoryDryRun,
+    }),
+    claudeLocalHistoryImport: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:claude-local-history-import",
+      tag: WS_METHODS.serverClaudeLocalHistoryImport,
+    }),
   };
 }

@@ -139,6 +139,11 @@ import {
   CursorLocalHistoryImportInput,
   CursorLocalHistoryImportResult,
 } from "./cursorLocalHistory.ts";
+import {
+  ClaudeLocalHistoryDryRunResult,
+  ClaudeLocalHistoryImportInput,
+  ClaudeLocalHistoryImportResult,
+} from "./claudeLocalHistory.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -225,6 +230,8 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverCursorLocalHistoryDryRun: "server.cursorLocalHistory.dryRun",
   serverCursorLocalHistoryImport: "server.cursorLocalHistory.import",
+  serverClaudeLocalHistoryDryRun: "server.claudeLocalHistory.dryRun",
+  serverClaudeLocalHistoryImport: "server.claudeLocalHistory.import",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -355,6 +362,24 @@ export const WsServerCursorLocalHistoryImportRpc = Rpc.make(
   {
     payload: CursorLocalHistoryImportInput,
     success: CursorLocalHistoryImportResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const WsServerClaudeLocalHistoryDryRunRpc = Rpc.make(
+  WS_METHODS.serverClaudeLocalHistoryDryRun,
+  {
+    payload: Schema.Struct({}),
+    success: ClaudeLocalHistoryDryRunResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const WsServerClaudeLocalHistoryImportRpc = Rpc.make(
+  WS_METHODS.serverClaudeLocalHistoryImport,
+  {
+    payload: ClaudeLocalHistoryImportInput,
+    success: ClaudeLocalHistoryImportResult,
     error: EnvironmentAuthorizationError,
   },
 );
@@ -740,6 +765,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSignalProcessRpc,
   WsServerCursorLocalHistoryDryRunRpc,
   WsServerCursorLocalHistoryImportRpc,
+  WsServerClaudeLocalHistoryDryRunRpc,
+  WsServerClaudeLocalHistoryImportRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,
