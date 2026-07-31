@@ -4,7 +4,6 @@ import type {
   OrchestrationProject,
   OrchestrationThread,
 } from "@t3tools/contracts";
-import { ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -29,6 +28,7 @@ export interface LocalHistoryHarnessMessage {
 export function makeLocalHistoryImportHarness() {
   const receipts = new Set<string>();
   const threadMessages = new Map<string, LocalHistoryHarnessMessage[]>();
+  const threadModelSelections = new Map<string, ModelSelection>();
   const projectIdsByRoot = new Map<string, string>();
 
   const orchestrationEngine = {
@@ -47,6 +47,18 @@ export function makeLocalHistoryImportHarness() {
           case "thread.create":
             if (!threadMessages.has(command.threadId as string)) {
               threadMessages.set(command.threadId as string, []);
+            }
+            threadModelSelections.set(
+              command.threadId as string,
+              command.modelSelection as ModelSelection,
+            );
+            break;
+          case "thread.meta.update":
+            if (command.modelSelection !== undefined) {
+              threadModelSelections.set(
+                command.threadId as string,
+                command.modelSelection as ModelSelection,
+              );
             }
             break;
           case "thread.messages.import": {
@@ -88,15 +100,16 @@ export function makeLocalHistoryImportHarness() {
       Effect.succeed(
         Option.map(
           Option.fromUndefinedOr(threadMessages.get(threadId)),
-          (messages) => ({ messages }) as unknown as OrchestrationThread,
+          (messages) =>
+            ({
+              messages,
+              modelSelection: threadModelSelections.get(threadId),
+              session: null,
+              latestTurn: null,
+            }) as unknown as OrchestrationThread,
         ),
       ),
   } as unknown as ProjectionSnapshotQueryShape;
 
-  return { orchestrationEngine, projectionSnapshotQuery, threadMessages };
+  return { orchestrationEngine, projectionSnapshotQuery, threadMessages, threadModelSelections };
 }
-
-export const testLocalHistoryModelSelection: ModelSelection = {
-  instanceId: ProviderInstanceId.make("codex"),
-  model: "test-model",
-};

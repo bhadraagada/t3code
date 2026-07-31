@@ -15,10 +15,7 @@ import {
   importCursorLocalHistoryCandidates,
   scanCursorLocalHistoryImportCandidates,
 } from "../cursorLocalHistory/CursorLocalHistory.ts";
-import {
-  makeLocalHistoryImportHarness,
-  testLocalHistoryModelSelection,
-} from "./importTestHarness.ts";
+import { makeLocalHistoryImportHarness } from "./importTestHarness.ts";
 import { runLocalHistorySyncOnce } from "./LocalHistorySync.ts";
 import { writebackClaudeLocalHistory, writebackCursorLocalHistory } from "./writeback.ts";
 
@@ -68,7 +65,6 @@ describe("localHistory writeback", () => {
       const candidates = yield* scanCursorLocalHistoryImportCandidates(roots);
       const imported = yield* importCursorLocalHistoryCandidates({
         candidates,
-        modelSelection: testLocalHistoryModelSelection,
         orchestrationEngine: harness.orchestrationEngine,
         projectionSnapshotQuery: harness.projectionSnapshotQuery,
       });
@@ -133,7 +129,6 @@ describe("localHistory writeback", () => {
       const candidates = yield* scanClaudeLocalHistoryImportCandidates(roots);
       const imported = yield* importClaudeLocalHistoryCandidates({
         candidates,
-        modelSelection: testLocalHistoryModelSelection,
         orchestrationEngine: harness.orchestrationEngine,
         projectionSnapshotQuery: harness.projectionSnapshotQuery,
       });
@@ -188,7 +183,6 @@ describe("localHistory writeback", () => {
 
       const harness = makeLocalHistoryImportHarness();
       const syncArgs = {
-        modelSelection: testLocalHistoryModelSelection,
         orchestrationEngine: harness.orchestrationEngine,
         projectionSnapshotQuery: harness.projectionSnapshotQuery,
         cursorRoots,

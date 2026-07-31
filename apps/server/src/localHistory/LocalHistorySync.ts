@@ -1,8 +1,4 @@
-import type {
-  LocalHistorySyncResult,
-  LocalHistorySyncSourceSummary,
-  ModelSelection,
-} from "@t3tools/contracts";
+import type { LocalHistorySyncResult, LocalHistorySyncSourceSummary } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -78,7 +74,6 @@ function toSourceSummary(
 
 export function runLocalHistorySyncOnce(input: {
   readonly writebackEnabled: boolean;
-  readonly modelSelection: ModelSelection;
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly projectionSnapshotQuery: ProjectionSnapshotQueryShape;
   readonly cursorRoots?: CursorLocalHistoryRoots;
@@ -90,7 +85,6 @@ export function runLocalHistorySyncOnce(input: {
     const cursorCandidates = yield* scanCursorLocalHistoryImportCandidates(input.cursorRoots);
     const cursorImport = yield* importCursorLocalHistoryCandidates({
       candidates: cursorCandidates,
-      modelSelection: input.modelSelection,
       orchestrationEngine: input.orchestrationEngine,
       projectionSnapshotQuery: input.projectionSnapshotQuery,
     });
@@ -104,7 +98,6 @@ export function runLocalHistorySyncOnce(input: {
     const claudeCandidates = yield* scanClaudeLocalHistoryImportCandidates(input.claudeRoots);
     const claudeImport = yield* importClaudeLocalHistoryCandidates({
       candidates: claudeCandidates,
-      modelSelection: input.modelSelection,
       orchestrationEngine: input.orchestrationEngine,
       projectionSnapshotQuery: input.projectionSnapshotQuery,
     });
@@ -145,7 +138,6 @@ export const make = Effect.gen(function* () {
       const settings = yield* readSettings;
       return yield* runLocalHistorySyncOnce({
         writebackEnabled: settings.localHistorySyncWriteback,
-        modelSelection: settings.textGenerationModelSelection,
         orchestrationEngine,
         projectionSnapshotQuery,
       });

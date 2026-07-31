@@ -7,10 +7,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  makeLocalHistoryImportHarness,
-  testLocalHistoryModelSelection,
-} from "../localHistory/importTestHarness.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
+
+import { makeLocalHistoryImportHarness } from "../localHistory/importTestHarness.ts";
 import {
   importClaudeLocalHistoryCandidates,
   scanClaudeLocalHistoryDryRun,
@@ -118,7 +117,6 @@ describe("ClaudeLocalHistory", () => {
         const candidates = yield* scanClaudeLocalHistoryImportCandidates(roots);
         return yield* importClaudeLocalHistoryCandidates({
           candidates,
-          modelSelection: testLocalHistoryModelSelection,
           orchestrationEngine: harness.orchestrationEngine,
           projectionSnapshotQuery: harness.projectionSnapshotQuery,
         });
@@ -130,6 +128,9 @@ describe("ClaudeLocalHistory", () => {
       expect(first.importedMessageCount).toBe(2);
       const threadId = first.threads[0]!.threadId;
       expect(harness.threadMessages.get(threadId)).toHaveLength(2);
+      // Imported threads are tagged with the Claude provider, not whatever
+      // the git text-generation model happens to be.
+      expect(harness.threadModelSelections.get(threadId)?.instanceId).toBe("claudeAgent");
 
       const second = yield* importOnce;
       expect(second.errors).toEqual([]);
@@ -151,6 +152,17 @@ describe("ClaudeLocalHistory", () => {
       const messages = harness.threadMessages.get(threadId)!;
       expect(messages).toHaveLength(3);
       expect(messages.at(-1)?.text).toBe("Follow-up answer.");
+
+      // Threads imported before source-based provider tagging (stuck on the
+      // git text-generation provider, e.g. cursor) get repaired on the next
+      // import as long as they were never used in T3.
+      harness.threadModelSelections.set(threadId, {
+        instanceId: ProviderInstanceId.make("cursor"),
+        model: "auto",
+      });
+      const fourth = yield* importOnce;
+      expect(fourth.errors).toEqual([]);
+      expect(harness.threadModelSelections.get(threadId)?.instanceId).toBe("claudeAgent");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.runPromise);
   });
 });

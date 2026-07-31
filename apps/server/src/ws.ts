@@ -11,7 +11,6 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
-  DEFAULT_SERVER_SETTINGS,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthReviewWriteScope,
@@ -1586,21 +1585,11 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverCursorLocalHistoryImport,
             Effect.gen(function* () {
-              const [candidates, settings] = yield* Effect.all([
-                scanCursorLocalHistoryImportCandidates(),
-                serverSettings.getSettings.pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("Failed to read settings for Cursor history import", {
-                      detail: error.message,
-                    }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
-                  ),
-                ),
-              ]);
+              const candidates = yield* scanCursorLocalHistoryImportCandidates();
               return yield* importCursorLocalHistoryCandidates({
                 candidates,
                 ...(input.offset !== undefined ? { offset: input.offset } : {}),
                 ...(input.limit !== undefined ? { limit: input.limit } : {}),
-                modelSelection: settings.textGenerationModelSelection,
                 orchestrationEngine,
                 projectionSnapshotQuery,
               });
@@ -1621,21 +1610,11 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverClaudeLocalHistoryImport,
             Effect.gen(function* () {
-              const [candidates, settings] = yield* Effect.all([
-                scanClaudeLocalHistoryImportCandidates(),
-                serverSettings.getSettings.pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("Failed to read settings for Claude history import", {
-                      detail: error.message,
-                    }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
-                  ),
-                ),
-              ]);
+              const candidates = yield* scanClaudeLocalHistoryImportCandidates();
               return yield* importClaudeLocalHistoryCandidates({
                 candidates,
                 ...(input.offset !== undefined ? { offset: input.offset } : {}),
                 ...(input.limit !== undefined ? { limit: input.limit } : {}),
-                modelSelection: settings.textGenerationModelSelection,
                 orchestrationEngine,
                 projectionSnapshotQuery,
               });

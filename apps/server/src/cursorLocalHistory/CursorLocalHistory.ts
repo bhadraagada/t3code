@@ -23,9 +23,13 @@ import type {
 } from "@t3tools/contracts";
 import {
   CommandId,
+  DEFAULT_MODEL_BY_PROVIDER,
   ProjectId as ProjectIdSchema,
+  ProviderDriverKind,
   ThreadId as ThreadIdSchema,
   MessageId as MessageIdSchema,
+  defaultInstanceIdForDriver,
+  isProviderDriverKind,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -116,6 +120,16 @@ export interface CursorLocalHistoryImportCandidate {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_IMPORT_MESSAGES_PER_CHAT = 2_000;
+
+const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
+const CURSOR_IMPORT_INSTANCE_ID = defaultInstanceIdForDriver(CURSOR_DRIVER_KIND);
+// Imported chats are Cursor conversations: tag them with the Cursor provider
+// so the chat UI locks the model picker to the matching driver, rather than
+// inheriting the unrelated git text-generation model selection.
+const CURSOR_IMPORT_MODEL_SELECTION: ModelSelection = {
+  instanceId: CURSOR_IMPORT_INSTANCE_ID,
+  model: DEFAULT_MODEL_BY_PROVIDER[CURSOR_DRIVER_KIND] ?? "auto",
+};
 
 function defaultWorkspaceStorageDir(homeDir: string, platform: NodeJS.Platform): string {
   if (process.env.APPDATA) {
@@ -797,7 +811,6 @@ export function importCursorLocalHistoryCandidates(input: {
   readonly candidates: ReadonlyArray<CursorLocalHistoryImportCandidate>;
   readonly offset?: number;
   readonly limit?: number;
-  readonly modelSelection: ModelSelection;
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly projectionSnapshotQuery: ProjectionSnapshotQueryShape;
 }): Effect.Effect<CursorLocalHistoryImportResult> {
@@ -843,9 +856,36 @@ export function importCursorLocalHistoryCandidates(input: {
 
         const existingThread = yield* input.projectionSnapshotQuery.getThreadDetailById(threadId);
         if (Option.isSome(existingThread)) {
+          const thread = existingThread.value;
+          // Repair threads imported before source-based provider tagging:
+          // they inherited the git text-generation model, which locks the
+          // chat UI to the wrong driver. Only touch threads never used in T3
+          // (no session, no turns) so a deliberate selection is never
+          // overridden, and only when the current selection points at a
+          // default driver instance (custom instances mean user intent).
+          const currentInstanceId = thread.modelSelection.instanceId;
+          if (
+            thread.session === null &&
+            thread.latestTurn === null &&
+            currentInstanceId !== CURSOR_IMPORT_INSTANCE_ID &&
+            isProviderDriverKind(currentInstanceId)
+          ) {
+            yield* input.orchestrationEngine.dispatch({
+              type: "thread.meta.update",
+              commandId: commandIdForImport([
+                "model-selection",
+                candidate.workspaceKey,
+                candidate.chatId,
+                CURSOR_IMPORT_INSTANCE_ID,
+              ]),
+              threadId,
+              modelSelection: CURSOR_IMPORT_MODEL_SELECTION,
+            });
+          }
+
           // Already imported: append only the source messages missing from the
-          // T3 thread. An unchanged source dispatches nothing at all.
-          const delta = selectNewLocalHistoryMessages(existingThread.value.messages, messages);
+          // T3 thread. An unchanged source dispatches no message import at all.
+          const delta = selectNewLocalHistoryMessages(thread.messages, messages);
           if (delta.length === 0) return;
           yield* input.orchestrationEngine.dispatch({
             type: "thread.messages.import",
@@ -885,7 +925,7 @@ export function importCursorLocalHistoryCandidates(input: {
             projectId,
             title: projectTitle(candidate),
             workspaceRoot: candidate.workspacePath,
-            defaultModelSelection: input.modelSelection,
+            defaultModelSelection: CURSOR_IMPORT_MODEL_SELECTION,
             createdAt,
           });
           importedProjectCount += 1;
@@ -897,7 +937,7 @@ export function importCursorLocalHistoryCandidates(input: {
           threadId,
           projectId,
           title: candidate.title,
-          modelSelection: input.modelSelection,
+          modelSelection: CURSOR_IMPORT_MODEL_SELECTION,
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,
