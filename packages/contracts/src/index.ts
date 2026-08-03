@@ -1,4 +1,5 @@
 export * from "./baseSchemas.ts";
+export * from "./background.ts";
 export * from "./auth.ts";
 export * from "./environment.ts";
 export * from "./environmentHttp.ts";
@@ -29,4 +30,5 @@ export * from "./previewAutomation.ts";
 export * from "./cursorLocalHistory.ts";
 export * from "./claudeLocalHistory.ts";
 export * from "./localHistorySync.ts";
+export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";

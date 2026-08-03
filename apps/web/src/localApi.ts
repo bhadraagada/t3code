@@ -6,9 +6,7 @@ import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientP
 
 let cachedApi: LocalApi | undefined;
 
-function unavailableLocalBackendError(): Error {
-  return new Error("Local backend API is unavailable before a backend is paired.");
-}
+const unavailableLocalBackendError = () => new Error("Local server API is unavailable in the browser.");
 
 function createBrowserLocalApi(): LocalApi {
   return {
@@ -25,7 +23,6 @@ function createBrowserLocalApi(): LocalApi {
       },
     },
     shell: {
-      openInEditor: () => Promise.reject(unavailableLocalBackendError()),
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);
@@ -92,12 +89,7 @@ export function readLocalApi(): LocalApi | undefined {
   if (typeof window === "undefined") return undefined;
   if (cachedApi) return cachedApi;
 
-  if (window.nativeApi) {
-    cachedApi = window.nativeApi;
-    return cachedApi;
-  }
-
-  cachedApi = createBrowserLocalApi();
+  cachedApi = createLocalApi();
   return cachedApi;
 }
 
