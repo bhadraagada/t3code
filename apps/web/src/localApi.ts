@@ -6,7 +6,8 @@ import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientP
 
 let cachedApi: LocalApi | undefined;
 
-const unavailableLocalBackendError = () => new Error("Local server API is unavailable in the browser.");
+const unavailableLocalBackendError = () =>
+  new Error("Local server API is unavailable in the browser.");
 
 function createBrowserLocalApi(): LocalApi {
   return {
